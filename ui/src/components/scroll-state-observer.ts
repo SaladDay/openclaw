@@ -4,7 +4,6 @@ import { listen } from "../lib/reactive/listener.ts";
 export type ScrollState = { scrollable: boolean; atStart: boolean; atEnd: boolean };
 type Observation = {
   horizontal: boolean;
-  trackScroll: boolean;
   publish: (state: ScrollState) => void;
 };
 const observations = new Map<HTMLElement, { entries: Set<Observation>; stopScroll: () => void }>();
@@ -45,10 +44,7 @@ function schedule(element: HTMLElement): void {
 
 function onScroll(event: Event): void {
   const element = event.currentTarget;
-  if (
-    element instanceof HTMLElement &&
-    [...(observations.get(element)?.entries ?? [])].some((entry) => entry.trackScroll)
-  ) {
+  if (element instanceof HTMLElement) {
     schedule(element);
   }
 }
@@ -58,7 +54,6 @@ export function observeScrollState(
   element: HTMLElement,
   publish: (state: ScrollState) => void,
   horizontal = false,
-  trackScroll = true,
 ): { schedule: () => void; disconnect: () => void } {
   let group = observations.get(element);
   if (!group) {
@@ -79,7 +74,7 @@ export function observeScrollState(
     resizeObserver?.observe(element);
   }
   const { entries, stopScroll } = group;
-  const entry = { horizontal, trackScroll, publish };
+  const entry = { horizontal, publish };
   entries.add(entry);
   schedule(element);
   return {
