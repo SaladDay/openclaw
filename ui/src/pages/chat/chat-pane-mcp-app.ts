@@ -61,7 +61,6 @@ type ChatPaneMcpAppState = ChatComposerScope &
     | "chatAttachments"
     | "uploadConfig"
     | "hello"
-    | "requestUpdate"
     | "handleSendChat"
     | "handleOpenSidebar"
   >;
@@ -73,6 +72,7 @@ export type ChatPaneMcpAppOwner = {
   presented: boolean;
   agentId?: string;
   launch?: McpAppOpenDetail;
+  replaceAttachments: (attachments: ChatPaneMcpAppState["chatAttachments"]) => void;
   /** Captures this state; the workspace owner still owns file admission and rendering. */
   openFile: (path: string) => void;
 };
@@ -159,8 +159,7 @@ export function createChatPaneMcpApps(options: {
       dataUrl: encodeTextAsDataUrl(text),
       file,
     });
-    state.chatAttachments = [...state.chatAttachments, attachment];
-    state.requestUpdate();
+    owner.replaceAttachments([...state.chatAttachments, attachment]);
   }
 
   function receiveMessage(event: CustomEvent<McpAppMessageEventDetail>): void {

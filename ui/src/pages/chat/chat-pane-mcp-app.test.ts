@@ -53,7 +53,6 @@ function fixture() {
     assistantAgentId: "main",
     chatAttachments: [],
     hello: null,
-    requestUpdate: vi.fn(),
     handleSendChat: vi.fn(async () => {}),
     handleOpenSidebar: vi.fn(),
   };
@@ -62,6 +61,9 @@ function fixture() {
     state,
     presented: true,
     agentId: "fallback",
+    replaceAttachments: (attachments) => {
+      state.chatAttachments = attachments;
+    },
     openFile: vi.fn(),
   };
   let current: ChatPaneMcpAppOwner | null = owner;
@@ -264,7 +266,6 @@ describe("MCP app pane actions", () => {
       }).defaultPrevented,
     ).toBe(true);
     expect(f.state.chatAttachments[0]).toMatchObject({ fileName: "Hex-bolt.txt", origin: "file" });
-    expect(f.state.requestUpdate).toHaveBeenCalledOnce();
     const respond = vi.fn();
     expect(
       f.dispatch(MCP_APP_FILE_OPEN_EVENT, {
