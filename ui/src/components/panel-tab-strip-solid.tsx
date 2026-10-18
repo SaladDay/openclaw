@@ -17,7 +17,9 @@ import { Icon } from "./solid/icon.tsx";
 import { bindShadowStyles } from "./solid/shadow-styles.ts";
 import "./tooltip.ts";
 import "../styles/tabs.css";
+import "./panel-tab-strip.css";
 import tabsStyles from "../styles/tabs.css?inline";
+import panelStyles from "./panel-tab-strip.css?inline";
 
 declare module "@solidjs/web" {
   namespace JSX {
@@ -29,6 +31,8 @@ declare module "@solidjs/web" {
 
 export type SolidPanelTabStripTab = Omit<PanelTabStripTab, "icon"> & { icon?: SolidJSX.Element };
 export type PanelTabStripProps<T extends SolidPanelTabStripTab> = {
+  /** Explicit host presentation; a narrow desktop panel is still desktop. */
+  presentation?: "desktop" | "mobile";
   tabs: T[];
   renderIcon?: (tab: Accessor<T>) => SolidJSX.Element;
   activeId: string | null;
@@ -147,7 +151,7 @@ function TabGroupView<T extends SolidPanelTabStripTab>(props: PanelTabStripProps
   );
 
   onSettled(() => {
-    const styles = bindShadowStyles(group, [tabsStyles]);
+    const styles = bindShadowStyles(group, [tabsStyles, panelStyles]);
     let disposed = false;
     let resizeObserver: ResizeObserver | undefined;
     let observed = new Set<Element>();
@@ -227,8 +231,26 @@ function TabGroupView<T extends SolidPanelTabStripTab>(props: PanelTabStripProps
         if (!selected) {
           return;
         }
+        // The close action is a sibling, and sidebar styles place it outside
+        // the tab button. Reveal their combined bounds in this row only.
+        const tabRect = selected.getBoundingClientRect();
+        const close = selected.nextElementSibling;
+        const closeRect = close?.matches(".tabstrip-tab__close")
+          ? close.getBoundingClientRect()
+          : tabRect;
+        const viewport = group.getBoundingClientRect();
+        const left = Math.min(tabRect.left, closeRect.left);
+        const right = Math.max(tabRect.right, closeRect.right);
+        if (left < viewport.left || right > viewport.right) {
+          // Align the active pair's start so native scroll snapping cannot
+          // settle on a preceding tab while leaving this close action clipped.
+          const offset =
+            getComputedStyle(group).direction === "rtl"
+              ? right - viewport.right
+              : left - viewport.left;
+          group.scrollBy({ left: offset, behavior: "instant" });
+        }
         // Recover only focus lost by keyed movement, never newer user focus.
-        selected.scrollIntoView?.({ block: "nearest", inline: "nearest" });
         if (focusedId === selected.id && focusNeedsRecovery(selected, activeElementFor(selected))) {
           selected.focus({ preventScroll: true });
         }
@@ -237,7 +259,7 @@ function TabGroupView<T extends SolidPanelTabStripTab>(props: PanelTabStripProps
   );
 
   async function closeTab(event: MouseEvent, tab: T) {
-    if (tab.closeDisabled) {
+    if (tab.closable === false || tab.closeDisabled) {
       return;
     }
     const button = event.currentTarget;
@@ -275,7 +297,7 @@ function TabGroupView<T extends SolidPanelTabStripTab>(props: PanelTabStripProps
         ref={(element) => {
           group = element;
         }}
-        class="oc-tabs tabstrip"
+        class={["oc-tabs tabstrip", { "tabstrip--desktop": props.presentation === "desktop" }]}
         role="tablist"
         aria-orientation="horizontal"
         onScroll={() => scheduleMeasurement()}
@@ -341,6 +363,7 @@ function TabGroupView<T extends SolidPanelTabStripTab>(props: PanelTabStripProps
                     "oc-tab tabstrip-tab",
                     tab().className,
                     {
+                      "is-fixed": tab().closable === false,
                       "is-drop-before": preview() === "before",
                       "is-drop-after": preview() === "after",
                     },
@@ -355,7 +378,7 @@ function TabGroupView<T extends SolidPanelTabStripTab>(props: PanelTabStripProps
                   onClick={tabs.onClick}
                   onKeyDown={tabs.onKeyDown}
                   onAuxClick={(event: MouseEvent) => {
-                    if (event.button === 1 && !tab().closeDisabled) {
+                    if (event.button === 1 && tab().closable !== false && !tab().closeDisabled) {
                       event.preventDefault();
                       void props.onClose(tab().id);
                     }
@@ -393,28 +416,30 @@ function TabGroupView<T extends SolidPanelTabStripTab>(props: PanelTabStripProps
                     </openclaw-tooltip>
                   </Show>
                 </button>
-                <button
-                  id={`${tab().domId}-close`}
-                  slot="nav"
-                  class="rail-header__action tabstrip-tab__close"
-                  type="button"
-                  tabindex={selected() ? 0 : -1}
-                  aria-label={tab().closeLabel}
-                  disabled={tab().closeDisabled}
-                  onKeyDown={(event: KeyboardEvent) => {
-                    if (
-                      (event.key === "Enter" || event.key === " ") &&
-                      event.currentTarget instanceof Element
-                    ) {
-                      keyboardCloseActivations.add(event.currentTarget);
-                    }
-                  }}
-                  onClick={(event: MouseEvent) => void closeTab(event, tab())}
-                >
-                  <span class="tabstrip-tab__close-box">
-                    <Icon name="x" />
-                  </span>
-                </button>
+                <Show when={tab().closable !== false}>
+                  <button
+                    id={`${tab().domId}-close`}
+                    slot="nav"
+                    class="rail-header__action tabstrip-tab__close"
+                    type="button"
+                    tabindex={selected() ? 0 : -1}
+                    aria-label={tab().closeLabel}
+                    disabled={tab().closeDisabled}
+                    onKeyDown={(event: KeyboardEvent) => {
+                      if (
+                        (event.key === "Enter" || event.key === " ") &&
+                        event.currentTarget instanceof Element
+                      ) {
+                        keyboardCloseActivations.add(event.currentTarget);
+                      }
+                    }}
+                    onClick={(event: MouseEvent) => void closeTab(event, tab())}
+                  >
+                    <span class="tabstrip-tab__close-box">
+                      <Icon name="x" />
+                    </span>
+                  </button>
+                </Show>
                 <Show
                   when={
                     props.separateTabs === true &&
@@ -435,7 +460,7 @@ function TabGroupView<T extends SolidPanelTabStripTab>(props: PanelTabStripProps
         role="group"
         style={{ display: "contents" }}
         aria-owns={[
-          ...props.tabs.map((tab) => `${tab.domId}-close`),
+          ...props.tabs.filter((tab) => tab.closable !== false).map((tab) => `${tab.domId}-close`),
           ...(props.newControl === null ? [] : [`${props.tabs[0]?.domId}-new`]),
         ].join(" ")}
       />
