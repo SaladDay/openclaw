@@ -36,6 +36,8 @@ type DiscussionProps = {
   onStateChange: SessionDiscussionStateListener | null;
   canOpen: boolean;
   sourceGeneration: number;
+  /** Native shell presentation, independent of the panel's width. */
+  presentation?: "desktop" | "mobile";
 };
 type DiscussionState =
   | { status: "empty" | "loading" | "opening" }
@@ -145,8 +147,14 @@ function DiscussionPanel(props: DiscussionProps, host: SolidBridgeElement<Discus
     const origin = new URL(frame.src).origin;
     postWidgetTheme(frame, origin);
   };
-  const empty = (description: string, openUrl?: string | null) => (
+  const empty = (
+    description: string,
+    openUrl?: string | null,
+    presentation?: DiscussionProps["presentation"],
+  ) => (
     <PanelEmptyState
+      // Only the desktop cannot-embed state opts into the approved geometry.
+      presentation={presentation === "desktop" ? "desktop" : undefined}
       icon={<Icon name="messageSquare" />}
       heading={t("chat.sidePanel.discussion")}
       description={description}
@@ -190,6 +198,8 @@ function DiscussionPanel(props: DiscussionProps, host: SolidBridgeElement<Discus
             ? "chat.sessionDiscussion.unavailable"
             : "chat.sessionDiscussion.requiresWriteAccess",
         ),
+        undefined,
+        props.canOpen ? props.presentation : undefined,
       );
     }
     const embedUrl = resolveDiscussionEmbedUrl(current.info.embedUrl);
@@ -208,7 +218,11 @@ function DiscussionPanel(props: DiscussionProps, host: SolidBridgeElement<Discus
             onLoad={(event) => postTheme(event.currentTarget)}
           />
         ) : (
-          empty(t("chat.sessionDiscussion.unavailable"), resolveDiscussionUrl(current.info.openUrl))
+          empty(
+            t("chat.sessionDiscussion.unavailable"),
+            resolveDiscussionUrl(current.info.openUrl),
+            props.presentation,
+          )
         )}
       </div>
     );
@@ -227,6 +241,7 @@ export const SessionDiscussionPanel = defineSolidBridge<DiscussionProps>(
       onStateChange: { default: null, attribute: false },
       canOpen: { default: true },
       sourceGeneration: { default: 0 },
+      presentation: { default: undefined },
     },
   },
 );
