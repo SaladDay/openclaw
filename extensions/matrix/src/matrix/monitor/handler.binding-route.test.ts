@@ -25,7 +25,6 @@ import { createOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, expect, it, vi } from "vitest";
 import { matrixPlugin } from "../../channel.js";
 import { installMatrixMonitorTestRuntime } from "../../test-runtime.js";
-import { createMatrixMonitorEventsTestHarness } from "./events.test-helpers.js";
 import {
   createMatrixHandlerTestHarness,
   createMatrixTextMessageEvent,
@@ -156,8 +155,6 @@ it.each(["plugin-to-global", "configured-stable", "configured-to-global"] as con
     const entered = createDeferred<void>();
     const release = createDeferred<void>();
     let pause = true;
-    const commit = vi.fn(async () => true);
-    const releaseClaim = vi.fn();
     const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
     const { handler } = createMatrixHandlerTestHarness({
       cfg,
@@ -171,12 +168,6 @@ it.each(["plugin-to-global", "configured-stable", "configured-to-global"] as con
         mainSessionKey: "agent:main:main",
         matchedBy: "binding.account",
       }),
-      inboundDeduper: {
-        claim: async () => ({
-          kind: "claimed",
-          handle: { keys: [scenario], commit, release: releaseClaim },
-        }),
-      },
       getMemberDisplayName: async (_room, userId) => {
         if (pause && userId === senderId) {
           pause = false;
@@ -208,35 +199,17 @@ it.each(["plugin-to-global", "configured-stable", "configured-to-global"] as con
         }
       },
     });
-    const monitor = createMatrixMonitorEventsTestHarness({
-      cfg,
-      accountId: "ops",
-      onRoomMessage: handler,
-    });
-    const cleanupRegistry = cleanup;
-    cleanup = async () => {
-      release.resolve();
-      try {
-        await monitor.flushTasks();
-      } finally {
-        try {
-          await monitor.dispose();
-        } finally {
-          await cleanupRegistry();
-        }
-      }
-    };
     const event = createMatrixTextMessageEvent({
       eventId: `$matrix-route-${scenario}`,
       sender: senderId,
       body: "@room continue",
       mentions: { room: true },
     });
-    const emit = () => {
-      monitor.roomMessageListener(roomId, event);
-      return monitor.flushTasks();
-    };
-    const first = emit();
+    const receive = () => handler(roomId, event);
+    const first = receive();
+    const firstOutcome = transition
+      ? expect(first).rejects.toThrow("Conversation binding changed while preparing the reply")
+      : first;
     await Promise.race([
       entered.promise,
       first.then(() => {
@@ -250,25 +223,21 @@ it.each(["plugin-to-global", "configured-stable", "configured-to-global"] as con
       current = replacement;
     }
     release.resolve();
-    await first;
+    await firstOutcome;
 
     if (transition) {
       expect(terminal).not.toHaveBeenCalled();
-      expect(commit).not.toHaveBeenCalled();
-      expect(releaseClaim).toHaveBeenCalledOnce();
       expect(runtime.error).toHaveBeenCalledWith(
         expect.stringContaining("Conversation binding changed while preparing the reply"),
       );
-      await emit();
+      await receive();
       expect(terminal).toHaveBeenCalledExactlyOnceWith("work", "global");
     } else {
       expect(runtime.error).not.toHaveBeenCalled();
-      expect(releaseClaim).not.toHaveBeenCalled();
       expect(terminal).toHaveBeenCalledExactlyOnceWith(
         "configured",
         expect.stringContaining("agent:configured:acp:binding:matrix:ops:"),
       );
     }
-    expect(commit).toHaveBeenCalledOnce();
   },
 );

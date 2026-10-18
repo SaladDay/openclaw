@@ -82,7 +82,7 @@ it("refuses retired JSON state without changing it or inspecting token-root arch
     env: { HOME: stateDir, OPENCLAW_STATE_DIR: stateDir },
     stateDir,
     oauthDir: path.join(stateDir, "oauth"),
-    context: { openPluginStateKeyedStore },
+    context: { openPluginStateKeyedStore, readPluginStateEntriesInKeyRange: () => [] },
   };
   for (const run of [migration.detectLegacyState, migration.migrateLegacyState]) {
     const result = run(params);
@@ -111,7 +111,7 @@ it("completes absent legacy-state checks without loading client runtimes", async
     env: { HOME: stateDir, OPENCLAW_STATE_DIR: stateDir },
     stateDir,
     oauthDir: path.join(stateDir, "oauth"),
-    context: { openPluginStateKeyedStore },
+    context: { openPluginStateKeyedStore, readPluginStateEntriesInKeyRange: () => [] },
   };
   for (const id of [
     "matrix-account-sqlite-schema",
@@ -132,6 +132,14 @@ it("completes absent legacy-state checks without loading client runtimes", async
     (entry) => entry.id === "matrix-inbound-dedupe-to-claimable-dedupe",
   )!;
   await expect(inboundDedupe.detectLegacyState(params)).resolves.toBeNull();
+  const replayMarkers = stateMigrations.find(
+    (entry) => entry.id === "matrix-replay-guard-to-ingress",
+  )!;
+  expect(replayMarkers.detectLegacyState(params)).toBeNull();
+  await expect(replayMarkers.migrateLegacyState(params)).resolves.toEqual({
+    changes: [],
+    warnings: [],
+  });
   const credentials = stateMigrations.find(
     (entry) => entry.id === "matrix-credentials-json-to-plugin-state",
   );
@@ -203,7 +211,7 @@ it.each([true, false])(
       env: { OPENCLAW_STATE_DIR: stateDir },
       stateDir,
       oauthDir: path.join(stateDir, "oauth"),
-      context: { openPluginStateKeyedStore },
+      context: { openPluginStateKeyedStore, readPluginStateEntriesInKeyRange: () => [] },
     };
     try {
       const detected = await migration.detectLegacyState(params);

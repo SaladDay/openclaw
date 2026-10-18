@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   createPersistentDedupeImportEntry,
+  resolvePersistentDedupePluginStateNamespace,
   type PersistentDedupeEntry,
 } from "openclaw/plugin-sdk/persistent-dedupe";
 import type {
@@ -15,8 +16,8 @@ import type {
 } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   createPluginStateKeyedStoreForTests,
-  getPluginStateCapacityForTests,
-  importPluginStateEntriesForDoctorForTests,
+  createPluginStateSyncKeyedStoreForTests,
+  createChannelIngressQueueForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import type { PluginDoctorStateMigrationContext } from "openclaw/plugin-sdk/runtime-doctor-migrations";
@@ -36,12 +37,10 @@ import {
   readMatrixIdbSnapshotJson,
   writeMatrixIdbSnapshotJson,
 } from "./src/matrix/crypto-state-store.js";
-import { importNewestInboundDedupeMarkers } from "./src/matrix/monitor/inbound-dedupe-migration.js";
 import {
-  createMatrixInboundEventDeduper,
+  importInboundDedupeMarkersToIngress,
   MATRIX_INBOUND_DEDUPE_TTL_MS,
-  resolveMatrixInboundDedupeStateNamespace,
-} from "./src/matrix/monitor/inbound-dedupe.js";
+} from "./src/matrix/monitor/inbound-dedupe-migration.js";
 import { restoreIdbFromDisk } from "./src/matrix/sdk/idb-persistence.js";
 import {
   clearAllIndexedDbState,
@@ -54,14 +53,51 @@ const DOCTOR_IDB_DATABASE_PREFIX = "openclaw-matrix-doctor-test";
 
 function createContext(env?: NodeJS.ProcessEnv): PluginDoctorStateMigrationContext {
   return {
-    getPluginStateCapacity() {
-      return getPluginStateCapacityForTests("matrix", env);
-    },
-    importPluginStateEntries(options, entries) {
-      importPluginStateEntriesForDoctorForTests("matrix", options, entries);
-    },
     openPluginStateKeyedStore: <T>(options: OpenKeyedStoreOptions): PluginStateKeyedStore<T> =>
       createPluginStateKeyedStoreForTests<T>("matrix", { ...options, env: options.env ?? env }),
+    readPluginStateEntriesInKeyRange(namespace, range) {
+      return createPluginStateSyncKeyedStoreForTests<unknown>("matrix", {
+        namespace,
+        maxEntries: 20_000,
+        defaultTtlMs: MATRIX_INBOUND_DEDUPE_TTL_MS,
+        env,
+      })
+        .entries()
+        .filter(
+          (entry) =>
+            entry.key.startsWith(range.prefix) && (!range.after || entry.key > range.after),
+        )
+        .toSorted((a, b) => a.key.localeCompare(b.key))
+        .slice(0, range.limit)
+        .map((entry) =>
+          Object.assign(entry, {
+            valueJson: JSON.stringify(entry.value),
+            expiresAt: entry.expiresAt ?? null,
+          }),
+        );
+    },
+    channelIngressQueues: [
+      {
+        channelId: "matrix",
+        listChannelIngressQueueAccountIds: async () => [],
+        openChannelIngressQueueForInspection: <TPayload, TMetadata>({
+          accountId,
+        }: { accountId?: string } = {}) =>
+          createChannelIngressQueueForTests<TPayload, TMetadata>({
+            channelId: "matrix",
+            accountId,
+            stateDir: env?.OPENCLAW_STATE_DIR,
+          }),
+        openChannelIngressQueue: <TPayload, TMetadata, TCompletedMetadata>({
+          accountId,
+        }: { accountId?: string } = {}) =>
+          createChannelIngressQueueForTests<TPayload, TMetadata, TCompletedMetadata>({
+            channelId: "matrix",
+            accountId,
+            stateDir: env?.OPENCLAW_STATE_DIR,
+          }),
+      },
+    ],
   };
 }
 
@@ -388,7 +424,7 @@ describe("matrix doctor contract state migrations", () => {
 
     await expect(migration.migrateLegacyState(createMigrationParams(stateDir))).resolves.toEqual({
       changes: [
-        "Migrated Matrix inbound dedupe markers to the claimable dedupe store (2 of 3 entries)",
+        "Migrated Matrix inbound dedupe markers to the durable ingress spool (2 of 3 entries)",
         `Retired Matrix inbound dedupe rows for ${homeRoot}`,
         `Retired Matrix inbound dedupe rows for ${sqliteRoot}`,
         "Recorded Matrix inbound dedupe migration completion (2 SQLite roots scanned)",
@@ -396,26 +432,21 @@ describe("matrix doctor contract state migrations", () => {
       warnings: [],
     });
 
-    // Pre-upgrade markers must keep deduping through the new runtime guard.
-    const dedupeEnv = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
-    const opsDeduper = createMatrixInboundEventDeduper({
-      auth: { accountId: "ops" },
-      env: dedupeEnv,
+    // Previously committed identities must reject transport replay after upgrade.
+    const opsQueue = createChannelIngressQueueForTests({
+      channelId: "matrix",
+      accountId: "ops",
+      stateDir,
     });
-    await expect(opsDeduper.claim({ roomId, eventId: "$committed" })).resolves.toEqual({
-      kind: "duplicate",
+    await expect(opsQueue.enqueue("$committed", {})).resolves.toMatchObject({ kind: "completed" });
+    await expect(opsQueue.enqueue("$stale", {})).resolves.toMatchObject({ kind: "accepted" });
+    const homeQueue = createChannelIngressQueueForTests({
+      channelId: "matrix",
+      accountId: "home",
+      stateDir,
     });
-    const staleClaim = await opsDeduper.claim({ roomId, eventId: "$stale" });
-    expect(staleClaim.kind).toBe("claimed");
-    if (staleClaim.kind === "claimed") {
-      staleClaim.handle.release();
-    }
-    const homeDeduper = createMatrixInboundEventDeduper({
-      auth: { accountId: "home" },
-      env: dedupeEnv,
-    });
-    await expect(homeDeduper.claim({ roomId, eventId: "$home-committed" })).resolves.toEqual({
-      kind: "duplicate",
+    await expect(homeQueue.enqueue("$home-committed", {})).resolves.toMatchObject({
+      kind: "completed",
     });
 
     // Only the two retired Matrix namespaces are deleted. The source remains
@@ -513,7 +544,6 @@ describe("matrix doctor contract state migrations", () => {
     const stateDir = tempDirs.make("openclaw-matrix-doctor-");
     const blockedDir = path.join(stateDir, "matrix", "accounts", "home");
     const storageRootDir = path.join(blockedDir, "matrix.example.org__bot", "0123456789abcdef");
-    const roomId = "!room:example.org";
     const eventId = "$found-on-retry";
     writeSqliteDedupeSource(storageRootDir, "home", eventId, Date.now() - 60_000);
 
@@ -540,17 +570,18 @@ describe("matrix doctor contract state migrations", () => {
     readdirSpy.mockRestore();
     await expect(migration.migrateLegacyState(params)).resolves.toEqual({
       changes: [
-        "Migrated Matrix inbound dedupe markers to the claimable dedupe store (1 of 1 entries)",
+        "Migrated Matrix inbound dedupe markers to the durable ingress spool (1 of 1 entries)",
         `Retired Matrix inbound dedupe rows for ${storageRootDir}`,
         "Recorded Matrix inbound dedupe migration completion (1 SQLite roots scanned)",
       ],
       warnings: [],
     });
-    const deduper = createMatrixInboundEventDeduper({
-      auth: { accountId: "home" },
-      env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+    const queue = createChannelIngressQueueForTests({
+      channelId: "matrix",
+      accountId: "home",
+      stateDir,
     });
-    await expect(deduper.claim({ roomId, eventId })).resolves.toEqual({ kind: "duplicate" });
+    await expect(queue.enqueue(eventId, {})).resolves.toMatchObject({ kind: "completed" });
     await expect(migration.detectLegacyState(params)).resolves.toBeNull();
   });
 
@@ -573,7 +604,7 @@ describe("matrix doctor contract state migrations", () => {
     expect(fs.existsSync(`${jsonPath}.migrated`)).toBe(false);
   });
 
-  it("keeps inbound dedupe sources when retention-aware import is unavailable", async () => {
+  it("keeps inbound dedupe sources when ingress import is unavailable", async () => {
     const stateDir = tempDirs.make("openclaw-matrix-doctor-");
     const storageRootDir = accountStorageRoot(stateDir, "home");
     const databasePath = writeSqliteDedupeSource(
@@ -584,13 +615,13 @@ describe("matrix doctor contract state migrations", () => {
     );
     const sourceBytes = fs.readFileSync(databasePath);
     const params = createMigrationParams(stateDir);
-    delete params.context.importPluginStateEntries;
+    delete params.context.channelIngressQueues;
     const migration = migrationById("matrix-inbound-dedupe-to-claimable-dedupe");
 
     await expect(migration.migrateLegacyState(params)).resolves.toEqual({
       changes: [],
       warnings: [
-        "Failed importing Matrix inbound dedupe markers: Error: retention-aware Matrix inbound dedupe import is unavailable; left legacy sources in place",
+        "Failed importing Matrix inbound dedupe markers: Error: Matrix ingress migration requires the host-owned ingress queue; left legacy sources in place",
       ],
     });
     expect(fs.readFileSync(databasePath)).toEqual(sourceBytes);
@@ -599,63 +630,36 @@ describe("matrix doctor contract state migrations", () => {
     });
   });
 
-  it("preserves a legacy inbound dedupe marker's remaining TTL", async () => {
+  it("preserves a legacy marker's remaining ingress tombstone retention", async () => {
     const stateDir = tempDirs.make("openclaw-matrix-doctor-");
     const env = { OPENCLAW_STATE_DIR: stateDir };
-    const io = { context: createContext(env), env };
-    const now = 2_000_000_000_000;
-    const remainingTtlMs = 1_000;
-    const roomId = "!room:example.org";
-    const eventId = "$near-expiry";
-    const key = `ops\0${roomId}\0${eventId}`;
-    const markerTs = now - MATRIX_INBOUND_DEDUPE_TTL_MS + remainingTtlMs;
-    const storedEntry = createPersistentDedupeImportEntry({ key, seenAt: markerTs });
-    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
-
+    const now = Date.now();
+    const markerTs = now - MATRIX_INBOUND_DEDUPE_TTL_MS + 1_000;
     await expect(
-      importNewestInboundDedupeMarkers({
-        io,
+      importInboundDedupeMarkersToIngress({
+        context: createContext(env),
         now,
         markers: [
-          {
-            accountId: "ops",
-            roomId,
-            eventId,
-            ts: markerTs,
-          },
+          { accountId: "ops", roomId: "!room:example.org", eventId: "$near-expiry", ts: markerTs },
         ],
       }),
     ).resolves.toEqual({ imported: 1, total: 1 });
-
-    const storeOptions = {
-      namespace: resolveMatrixInboundDedupeStateNamespace(),
-      maxEntries: 20_000,
-      defaultTtlMs: MATRIX_INBOUND_DEDUPE_TTL_MS,
-      env,
-    };
-    const store = createPluginStateKeyedStoreForTests<PersistentDedupeEntry>(
-      "matrix",
-      storeOptions,
-    );
-    const importedEntry = (await store.entries()).find((entry) => entry.key === storedEntry.key);
-    expect(importedEntry).toMatchObject({
-      createdAt: markerTs,
-      expiresAt: now + remainingTtlMs,
-      value: storedEntry.value,
+    const queue = createChannelIngressQueueForTests({
+      channelId: "matrix",
+      accountId: "ops",
+      stateDir,
     });
-    nowSpy.mockRestore();
-    await expect(store.lookup(storedEntry.key)).resolves.toEqual(storedEntry.value);
-
-    // Publish the expired fixture through its import owner, not a raw live-state write.
-    const expiryClock = vi.spyOn(Date, "now").mockReturnValue(0);
-    try {
-      importPluginStateEntriesForDoctorForTests("matrix", storeOptions, [
-        { key: storedEntry.key, value: storedEntry.value, createdAt: markerTs, ttlMs: 1 },
-      ]);
-    } finally {
-      expiryClock.mockRestore();
-    }
-    await expect(store.lookup(storedEntry.key)).resolves.toBeUndefined();
+    await expect(queue.enqueue("$near-expiry", {})).resolves.toMatchObject({
+      kind: "completed",
+      record: { completedAt: markerTs },
+    });
+    await expect(queue.prune({ completedTtlMs: MATRIX_INBOUND_DEDUPE_TTL_MS, now })).resolves.toBe(
+      0,
+    );
+    await expect(
+      queue.prune({ completedTtlMs: MATRIX_INBOUND_DEDUPE_TTL_MS, now: now + 1_001 }),
+    ).resolves.toBe(1);
+    await expect(queue.enqueue("$near-expiry", {})).resolves.toMatchObject({ kind: "accepted" });
   });
 
   it("keeps sources when the completion namespace is full and imports them after capacity frees", async () => {
@@ -672,17 +676,6 @@ describe("matrix doctor contract state migrations", () => {
     const databasePath = writeSqliteDedupeSource(storageRootDir, "home", "$legacy", now - 60_000);
     const sourceBytes = fs.readFileSync(databasePath);
     const params = createMigrationParams(stateDir);
-    const dedupeStore = params.context.openPluginStateKeyedStore<PersistentDedupeEntry>({
-      namespace: resolveMatrixInboundDedupeStateNamespace(),
-      maxEntries: 20_000,
-      defaultTtlMs: MATRIX_INBOUND_DEDUPE_TTL_MS,
-      env: params.env,
-    });
-    const canonicalEntry = createPersistentDedupeImportEntry({
-      key: "ops\0!room:example.org\0$runtime",
-      seenAt: now,
-    });
-    await dedupeStore.register(canonicalEntry.key, canonicalEntry.value);
     const completionStore = params.context.openPluginStateKeyedStore<{ value: number }>({
       namespace: "inbound-dedupe-migration-state",
       maxEntries: 4,
@@ -702,7 +695,6 @@ describe("matrix doctor contract state migrations", () => {
       expect.stringContaining("Failed reserving Matrix inbound dedupe migration completion:"),
     ]);
     expect(fs.readFileSync(databasePath)).toEqual(sourceBytes);
-    await expect(dedupeStore.lookup(canonicalEntry.key)).resolves.toEqual(canonicalEntry.value);
     await expect(completionStore.entries()).resolves.toHaveLength(4);
     await expect(
       migrationById("matrix-inbound-dedupe-to-claimable-dedupe").detectLegacyState(params),
@@ -714,25 +706,116 @@ describe("matrix doctor contract state migrations", () => {
       migrationById("matrix-inbound-dedupe-to-claimable-dedupe").migrateLegacyState(params),
     ).resolves.toEqual({
       changes: [
-        "Migrated Matrix inbound dedupe markers to the claimable dedupe store (1 of 1 entries)",
+        "Migrated Matrix inbound dedupe markers to the durable ingress spool (1 of 1 entries)",
         `Retired Matrix inbound dedupe rows for ${storageRootDir}`,
         "Recorded Matrix inbound dedupe migration completion (1 SQLite roots scanned)",
       ],
       warnings: [],
     });
-    await expect(dedupeStore.lookup(canonicalEntry.key)).resolves.toEqual(canonicalEntry.value);
-    const legacyEntry = createPersistentDedupeImportEntry({
-      key: "home\0!room:example.org\0$legacy",
-      seenAt: now - 60_000,
+    const queue = createChannelIngressQueueForTests({
+      channelId: "matrix",
+      accountId: "home",
+      stateDir,
     });
-    await expect(dedupeStore.lookup(legacyEntry.key)).resolves.toEqual(legacyEntry.value);
-    expect(getPluginStateCapacityForTests("matrix", params.env)).toEqual({
-      liveEntries: 6,
-      maxEntries: Number.POSITIVE_INFINITY,
-    });
+    await expect(queue.enqueue("$legacy", {})).resolves.toMatchObject({ kind: "completed" });
     await expect(
       migrationById("matrix-inbound-dedupe-to-claimable-dedupe").detectLegacyState(params),
     ).resolves.toBeNull();
+  });
+
+  it("moves current replay markers to account-scoped ingress after the historical migration completed", async () => {
+    const stateDir = tempDirs.make("openclaw-matrix-replay-upgrade-");
+    const params = createMigrationParams(stateDir);
+    const store = params.context.openPluginStateKeyedStore<PersistentDedupeEntry>({
+      namespace: resolvePersistentDedupePluginStateNamespace({
+        namespace: "global",
+        namespacePrefix: "matrix.inbound-dedupe",
+      }),
+      maxEntries: 20_000,
+      defaultTtlMs: MATRIX_INBOUND_DEDUPE_TTL_MS,
+    });
+    const seenAt = Date.now() - 60_000;
+    for (const accountId of ["ops", "home"]) {
+      const entry = createPersistentDedupeImportEntry({
+        key: `${accountId}\0!room:example.org\0$already-adopted`,
+        seenAt,
+      });
+      await store.register(entry.key, entry.value);
+    }
+    await params.context
+      .openPluginStateKeyedStore({
+        namespace: "inbound-dedupe-migration-state",
+        maxEntries: 4,
+      })
+      .register("sqlite-json-to-claimable-v1", { version: 1, completedAt: seenAt });
+    const migration = migrationById("matrix-replay-guard-to-ingress");
+    expect(migration.doctorOnly).not.toBe(true);
+    expect(await migration.detectLegacyState(params)).not.toBeNull();
+    await expect(migration.migrateLegacyState(params)).resolves.toMatchObject({ warnings: [] });
+    await expect(store.entries()).resolves.toEqual([]);
+    for (const accountId of ["ops", "home"]) {
+      const queue = createChannelIngressQueueForTests({ channelId: "matrix", accountId, stateDir });
+      await expect(queue.enqueue("$already-adopted", {})).resolves.toMatchObject({
+        kind: "completed",
+        record: { completedAt: seenAt },
+      });
+    }
+    expect(await migration.detectLegacyState(params)).toBeNull();
+  });
+
+  it("keeps replay markers until every ingress tombstone commits and retries without redelivery", async () => {
+    const stateDir = tempDirs.make("openclaw-matrix-replay-retry-");
+    const params = createMigrationParams(stateDir);
+    const store = params.context.openPluginStateKeyedStore<PersistentDedupeEntry>({
+      namespace: resolvePersistentDedupePluginStateNamespace({
+        namespace: "global",
+        namespacePrefix: "matrix.inbound-dedupe",
+      }),
+      maxEntries: 20_000,
+      defaultTtlMs: MATRIX_INBOUND_DEDUPE_TTL_MS,
+    });
+    const seenAt = Date.now() - 60_000;
+    for (const eventId of ["$first", "$second"]) {
+      const entry = createPersistentDedupeImportEntry({
+        key: `ops\0!room:example.org\0${eventId}`,
+        seenAt,
+      });
+      await store.register(entry.key, entry.value);
+    }
+    const access = params.context.channelIngressQueues![0]!;
+    const openQueue = access.openChannelIngressQueue!;
+    let completed = 0;
+    access.openChannelIngressQueue = <TPayload, TMetadata, TCompletedMetadata>(options?: {
+      accountId?: string;
+    }) => {
+      const queue = openQueue<TPayload, TMetadata, TCompletedMetadata>(options);
+      return {
+        ...queue,
+        complete: async (...args) => {
+          if (++completed === 2) {
+            throw new Error("injected ingress write failure");
+          }
+          return queue.complete(...args);
+        },
+      };
+    };
+    const migration = migrationById("matrix-replay-guard-to-ingress");
+    await expect(migration.migrateLegacyState(params)).rejects.toThrow(
+      "injected ingress write failure",
+    );
+    await expect(store.entries()).resolves.toHaveLength(2);
+    access.openChannelIngressQueue = openQueue;
+    await expect(migration.migrateLegacyState(params)).resolves.toMatchObject({ warnings: [] });
+    await expect(store.entries()).resolves.toEqual([]);
+    const queue = createChannelIngressQueueForTests({
+      channelId: "matrix",
+      accountId: "ops",
+      stateDir,
+    });
+    await expect(queue.listPending()).resolves.toEqual([]);
+    for (const eventId of ["$first", "$second"]) {
+      await expect(queue.enqueue(eventId, {})).resolves.toMatchObject({ kind: "completed" });
+    }
   });
 
   it.each([

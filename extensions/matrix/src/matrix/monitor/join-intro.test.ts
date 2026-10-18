@@ -96,7 +96,6 @@ function createHarness(
     bindings: [{ agentId: "planner", match: { channel: "matrix", accountId: "work" } }],
     channels: { matrix: { accounts: { work: {} } } },
   };
-  const onRoomMessage = vi.fn();
   const directTracker = createDirectRoomTracker(pluginClient);
   const params: Parameters<typeof registerMatrixMonitorEvents>[0] = {
     cfg,
@@ -121,7 +120,6 @@ function createHarness(
     warnedCryptoMissingRooms: new Set<string>(),
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     formatNativeDependencyHint: vi.fn(() => ""),
-    onRoomMessage,
     runDetachedTask: (_label: string, task: () => Promise<void>) => {
       const pending = task();
       tasks.push(pending);

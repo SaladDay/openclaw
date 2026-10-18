@@ -26,6 +26,8 @@ function isUnsupportedAuthenticatedMediaEndpointError(err: unknown): boolean {
   );
 }
 
+import type { MatrixSyncIngressHandler } from "../client/file-sync-store.js";
+
 export abstract class MatrixClientCore extends MatrixClientBase {
   async getUserId(): Promise<string> {
     const fromClient = this.client.getUserId();
@@ -447,6 +449,23 @@ export abstract class MatrixClientCore extends MatrixClientBase {
       nextBatch: result.nextBatch ?? null,
       prevBatch: result.prevBatch ?? null,
     };
+  }
+
+  async bindSyncIngress(handler: MatrixSyncIngressHandler): Promise<() => void> {
+    if (!this.syncStore) {
+      throw new Error("Matrix sync ingress requires a persistent sync store");
+    }
+    return await this.syncStore.bindSyncIngress(async (sync, context) => {
+      try {
+        await handler(sync, context);
+      } catch (error) {
+        const failure = error instanceof Error ? error : new Error(String(error));
+        // The SDK only logs a rejected store callback; the monitor must retire
+        // this generation instead of leaving a stopped sync loop marked healthy.
+        this.emitter.emit("sync.unexpected_error", failure);
+        throw failure;
+      }
+    });
   }
 
   async hydrateEvents(

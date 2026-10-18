@@ -11,26 +11,43 @@ import type {
 } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   createPluginStateKeyedStoreForTests,
-  getPluginStateCapacityForTests,
-  importPluginStateEntriesForDoctorForTests,
+  createChannelIngressQueueForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import type { PluginDoctorStateMigrationContext } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stateMigrations } from "./doctor-contract-api.js";
 import { SqliteBackedMatrixSyncStore } from "./src/matrix/client/file-sync-store.js";
-import { createMatrixInboundEventDeduper } from "./src/matrix/monitor/inbound-dedupe.js";
 import { installMatrixTestRuntime } from "./src/test-runtime.js";
 import { useAutoCleanupTempDirTracker } from "./test-support.js";
 
 function createMigrationParams(stateDir: string) {
   const env = { OPENCLAW_STATE_DIR: stateDir };
   const context: PluginDoctorStateMigrationContext = {
-    getPluginStateCapacity: () => getPluginStateCapacityForTests("matrix", env),
-    importPluginStateEntries: (options, entries) =>
-      importPluginStateEntriesForDoctorForTests("matrix", options, entries),
     openPluginStateKeyedStore: <T>(options: OpenKeyedStoreOptions): PluginStateKeyedStore<T> =>
       createPluginStateKeyedStoreForTests<T>("matrix", options),
+    channelIngressQueues: [
+      {
+        channelId: "matrix",
+        listChannelIngressQueueAccountIds: async () => [],
+        openChannelIngressQueueForInspection: <TPayload, TMetadata>({
+          accountId,
+        }: { accountId?: string } = {}) =>
+          createChannelIngressQueueForTests<TPayload, TMetadata>({
+            channelId: "matrix",
+            accountId,
+            stateDir,
+          }),
+        openChannelIngressQueue: <TPayload, TMetadata, TCompletedMetadata>({
+          accountId,
+        }: { accountId?: string } = {}) =>
+          createChannelIngressQueueForTests<TPayload, TMetadata, TCompletedMetadata>({
+            channelId: "matrix",
+            accountId,
+            stateDir,
+          }),
+      },
+    ],
   };
   return {
     config: {} as OpenClawConfig,
@@ -237,20 +254,17 @@ describe("matrix doctor archive scan boundaries", () => {
 
     expect(result.warnings).toEqual([]);
     expect(result.changes).toEqual([
-      "Migrated Matrix inbound dedupe markers to the claimable dedupe store (2 of 2 entries)",
+      "Migrated Matrix inbound dedupe markers to the durable ingress spool (2 of 2 entries)",
       ...activeRoots.map(
         (storageRootDir) => `Retired Matrix inbound dedupe rows for ${storageRootDir}`,
       ),
       "Recorded Matrix inbound dedupe migration completion (2 SQLite roots scanned)",
     ]);
     for (const [index, accountId] of ["sync-cache-backup", "legacy"].entries()) {
-      const deduper = createMatrixInboundEventDeduper({
-        auth: { accountId },
-        env: { OPENCLAW_STATE_DIR: stateDir },
+      const queue = createChannelIngressQueueForTests({ channelId: "matrix", accountId, stateDir });
+      await expect(queue.enqueue(`$active-${index}`, {})).resolves.toMatchObject({
+        kind: "completed",
       });
-      await expect(
-        deduper.claim({ roomId: "!room:example.org", eventId: `$active-${index}` }),
-      ).resolves.toEqual({ kind: "duplicate" });
     }
     for (const storageRootDir of excludedRoots) {
       expect(fs.existsSync(path.join(storageRootDir, "inbound-dedupe.json"))).toBe(true);
