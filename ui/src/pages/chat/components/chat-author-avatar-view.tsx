@@ -23,6 +23,7 @@ export type ChatAuthorAvatarProps = {
   class?: string;
   agentAvatar?: { avatar?: string | null; textAvatar?: string | null };
   channelAvatar?: ChannelSenderAvatarSource;
+  hideTooltip?: boolean;
 };
 
 function InitialsAvatar(props: {
@@ -62,6 +63,7 @@ export function ChatAuthorAvatar(props: ChatAuthorAvatarProps) {
                   sender={sender()}
                   label={label()!}
                   channelAvatar={props.channelAvatar}
+                  hideTooltip={props.hideTooltip}
                 />
               )}
             </IdentityAvatar>
@@ -71,7 +73,7 @@ export function ChatAuthorAvatar(props: ChatAuthorAvatarProps) {
             class={props.class ?? "chat-author-avatar"}
             role="img"
             aria-label={label()!}
-            title={label()!}
+            title={props.hideTooltip ? undefined : label()!}
           >
             <AgentIdentityAvatar
               agent={{
@@ -92,6 +94,7 @@ function ProfileAuthorAvatar(props: {
   sender: IdentityAvatarInput;
   label: string;
   channelAvatar?: ChannelSenderAvatarSource;
+  hideTooltip?: boolean;
 }) {
   const gateway = useAvatarGatewayContext();
   const channelPhoto = createMemo(() =>
@@ -103,7 +106,7 @@ function ProfileAuthorAvatar(props: {
       class="chat-author-avatar"
       role="img"
       aria-label={props.label}
-      title={props.label}
+      title={props.hideTooltip ? undefined : props.label}
     >
       <Show
         when={channelPhoto()}
