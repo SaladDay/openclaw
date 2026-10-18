@@ -34,7 +34,6 @@ import {
   createNpmLockGuardCommand,
   delegationFailedBeforeRunning,
 } from "../../scripts/check-changed.mts";
-import { resolveOxfmtInvocation } from "../../scripts/format-docs.mts";
 import { findTypecheckInertPaths } from "../../scripts/lib/typecheck-inert.mts";
 import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
@@ -255,13 +254,12 @@ function runChangedFormatLaneWithRepoOxfmt(cwd: string, changedPaths: string[]) 
   };
   const script = expectDefined(packageJson.scripts["format:check"], "format:check package script");
   const [bin, ...args] = script.split(" ");
-  expect(bin).toBe("oxfmt");
-  const invocation = resolveOxfmtInvocation([...args, ...command.args.slice(1)], { repoRoot });
-  return spawnSync(invocation.command, invocation.args, {
+  expect(bin).toBe("node");
+  args[0] = path.join(repoRoot, expectDefined(args[0], "format:check entrypoint"));
+  return spawnSync(testNodeExecPath, [...args, ...command.args.slice(1)], {
     cwd,
     encoding: "utf8",
-    shell: invocation.shell,
-    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+    env: { ...createNestedGitEnv(), CI: "", OPENCLAW_FORMAT_TOOL: "oxfmt" },
   });
 }
 
@@ -741,6 +739,7 @@ describe("scripts/changed-lanes", () => {
 
   it("fails the changed format check on a misformatted added file and passes once formatted", () => {
     const dir = tempDirs.make("openclaw-changed-format-added-");
+    symlinkSync(path.join(repoRoot, "node_modules"), path.join(dir, "node_modules"), "junction");
     writeRepoFile(dir, "src/added.test.ts", "export const added={value:1};\n");
 
     const dirty = runChangedFormatLaneWithRepoOxfmt(dir, ["src/added.test.ts"]);

@@ -248,6 +248,31 @@ function isRow(value: unknown): value is PluginStateRow {
   );
 }
 
+/** Join the already pending publications covered by the database-wide authority guard. */
+export function capturePluginStatePublicationSettlement(
+  identity: string,
+): Promise<void> | undefined {
+  // Later writers remain subject to the effect guard; they cannot prolong this preparation.
+  const pending = new Set(state.pending.get(identity));
+  if (!pending.size || state.unavailable.has(identity)) {
+    return undefined;
+  }
+  return new Promise((resolve) => {
+    const stop = publication.subscribeFacts((change) => {
+      if (change.kind === "unknown" && change.identity === identity) {
+        stop();
+        resolve();
+      } else if (change.kind === "settled" && change.identity === identity) {
+        pending.delete(change.operationId);
+        if (!pending.size) {
+          stop();
+          resolve();
+        }
+      }
+    });
+  });
+}
+
 /** External effects cannot use facts while a writer is pending or its outcome is unknown. */
 export function assertPluginStatePublicationSettled(identity: string): void {
   if (state.pending.has(identity) || state.unavailable.has(identity)) {

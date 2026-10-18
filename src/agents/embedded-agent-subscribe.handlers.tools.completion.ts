@@ -64,8 +64,8 @@ import {
   buildToolStartKey,
   emitAgentEventCallbackBestEffort,
   emitToolActivityEvent,
-  emitTrackedItemEvent,
   isExecToolName,
+  recordTrackedItemEvent,
   toolStartData,
 } from "./embedded-agent-subscribe.handlers.tools.start.js";
 import type { ToolHandlerContext } from "./embedded-agent-subscribe.handlers.types.js";
@@ -433,6 +433,8 @@ export async function prepareToolExecutionEnd(
     endedAt,
     ...(errorMessage ? { error: errorMessage } : {}),
   };
+  // Settlement is an execution fact even when stale or rejected activity cannot be published.
+  recordTrackedItemEvent(ctx, itemData);
   const hideFromChannelProgress = explicitHideFromChannelProgress;
   const createResultData = () => ({
     phase: "result",
@@ -501,7 +503,7 @@ export async function prepareToolExecutionEnd(
         result: eventResult,
       },
     });
-    emitTrackedItemEvent(ctx, itemData);
+    emitToolActivityEvent(ctx, { stream: "item", data: itemData });
     emitAgentEventCallbackBestEffort(ctx, {
       stream: "tool",
       data: createResultData(),

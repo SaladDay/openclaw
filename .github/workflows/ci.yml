@@ -5859,8 +5859,24 @@ jobs:
       - *select_xcode_step
 
       - name: Install Watch screenshot runtime
-        # The runner lists Watch device templates even when their runtime backing path is absent.
-        run: xcodebuild -downloadPlatform watchOS -buildVersion 27.0
+        run: |
+          set -euo pipefail
+          # Device templates and cached downloads can outlive the mounted runtime.
+          probe_watch_runtime() {
+            xcrun simctl create "OpenClaw Watch runtime probe" \
+              com.apple.CoreSimulator.SimDeviceType.Apple-Watch-Ultra-4-49mm \
+              com.apple.CoreSimulator.SimRuntime.watchOS-27-0
+          }
+          if ! probe_id="$(probe_watch_runtime)"; then
+            runtime_dir="$(mktemp -d "$RUNNER_TEMP/openclaw-watch-runtime.XXXXXX")"
+            xcodebuild -downloadPlatform watchOS -buildVersion 27.0 -exportPath "$runtime_dir"
+            shopt -s nullglob
+            runtime_images=("$runtime_dir"/*.dmg)
+            test "${#runtime_images[@]}" -eq 1
+            xcodebuild -importPlatform "${runtime_images[0]}"
+            probe_id="$(probe_watch_runtime)"
+          fi
+          xcrun simctl delete "$probe_id"
 
       - name: Setup Node environment
         uses: ./.ci-harness/.github/actions/setup-node-env

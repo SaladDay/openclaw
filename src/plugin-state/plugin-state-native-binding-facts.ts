@@ -1,9 +1,9 @@
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { parseStoredJson } from "./plugin-state-error.js";
 import { readCommittedPluginStateObservationCache } from "./plugin-state-observation-cache.js";
-import { capturePluginStateMutationSettlement } from "./plugin-state-operation-epochs.js";
 import {
   assertPluginStatePublicationSettled,
+  capturePluginStatePublicationSettlement,
   pluginStatePublication,
   pluginStatePublicationKey,
 } from "./plugin-state-publication.js";
@@ -78,10 +78,8 @@ export async function capturePluginStateNativeBindingFacts(
   };
   try {
     if (authority) {
-      // Warm facts must join the same earlier writers as a worker read before becoming authority.
-      const settled = capturePluginStateMutationSettlement(context.admission.coordinationKey, [
-        scope,
-      ]);
+      // The effect guard covers the whole database, not just this entry's namespace.
+      const settled = capturePluginStatePublicationSettlement(identity());
       if (settled) {
         await settled;
       }

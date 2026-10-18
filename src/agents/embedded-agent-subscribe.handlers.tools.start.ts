@@ -127,10 +127,9 @@ export function buildCommandItemTitle(toolName: string, meta?: string): string {
   return meta ? `command ${meta}` : `${toolName} command`;
 }
 
-export function emitTrackedItemEvent(
+export function recordTrackedItemEvent(
   ctx: ToolHandlerContext,
   itemData: AgentItemEventData,
-  emitLiveUpdate = true,
 ): void {
   if (itemData.phase === "start") {
     ctx.state.itemActiveIds.add(itemData.itemId);
@@ -139,6 +138,14 @@ export function emitTrackedItemEvent(
     ctx.state.itemActiveIds.delete(itemData.itemId);
     ctx.state.itemCompletedCount += 1;
   }
+}
+
+export function emitTrackedItemEvent(
+  ctx: ToolHandlerContext,
+  itemData: AgentItemEventData,
+  emitLiveUpdate = true,
+): void {
+  recordTrackedItemEvent(ctx, itemData);
   // Reply liveness and channel delivery still consume every original callback.
   if (itemData.phase !== "update" || emitLiveUpdate) {
     emitToolActivityEvent(ctx, { stream: "item", data: itemData });
