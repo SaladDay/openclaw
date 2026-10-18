@@ -1,4 +1,4 @@
-import { createEffect, createMemo, onCleanup } from "solid-js";
+import { createEffect, createMemo, onCleanup, useContext } from "solid-js";
 import { handleMarkdownCodeBlockClick } from "../../../components/markdown-code-blocks.ts";
 import {
   linkReaderPrefetchRef as createLinkReaderPrefetchRef,
@@ -31,6 +31,8 @@ import {
 } from "../chat-thread.ts";
 import { hydrateLinkFavicons } from "../link-favicon-loader.ts";
 import { ChatCommentPins } from "./chat-comment-pins.tsx";
+import { ChatConversationLoading } from "./chat-conversation-loading.tsx";
+import { ChatConversationMobile } from "./chat-conversation-presentation.ts";
 import { CHAT_HISTORY_BOUNDARY_HEIGHT_PX, ChatHistoryBoundary } from "./chat-history-boundary.tsx";
 import { ChatPositionRail } from "./chat-position-rail-solid.tsx";
 import {
@@ -57,6 +59,7 @@ function navigateCronRunLink(event: Event, props: ChatThreadProps): boolean {
 }
 
 export function ChatThread(input: { props: ChatThreadProps; transcript: ChatTranscript }) {
+  const mobile = useContext(ChatConversationMobile);
   let root: HTMLDivElement | undefined;
   const historyIntent = (event: Event) => input.props.onHistoryIntent?.(event);
   let stopHistory: (() => void)[] = [];
@@ -145,7 +148,7 @@ export function ChatThread(input: { props: ChatThreadProps; transcript: ChatTran
   const sentinel = () => (input.props.historyPagination ? historySentinel : undefined);
   const contents = createMemo(() => {
     if (routeLoading()) {
-      return <LoadingState />;
+      return mobile() ? <ChatConversationLoading route /> : <LoadingState />;
     }
     if (showLoadingSkeleton() || isEmpty()) {
       return (
@@ -155,7 +158,11 @@ export function ChatThread(input: { props: ChatThreadProps; transcript: ChatTran
             <ChatHistoryBoundary {...input.props.historyPagination} />
           ) : undefined}
           {showLoadingSkeleton() ? (
-            <PanelLoadingSkeleton variant="chat" label={t("chat.thread.loading")} />
+            mobile() ? (
+              <ChatConversationLoading route={false} />
+            ) : (
+              <PanelLoadingSkeleton variant="chat" label={t("chat.thread.loading")} />
+            )
           ) : undefined}
           {isEmpty() && !showLoadingSkeleton() && !searchOpen() ? (
             <ChatWelcome {...input.props} onModelSetup={undefined} />
