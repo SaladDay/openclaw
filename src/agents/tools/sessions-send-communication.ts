@@ -485,9 +485,10 @@ export async function prepareSessionsSendCommunication(params: {
       }
     };
     await refresh();
-    const callGateway: AgentToolGatewayRequestCaller = async <T>(
+    const callGateway = async <T>(
       request: Parameters<AgentToolGatewayRequestCaller>[0],
-    ) => {
+      requireDurableDelivery = false,
+    ): Promise<T> => {
       if (request.method !== "agent") {
         return params.callGateway<T>(request);
       }
@@ -565,11 +566,11 @@ export async function prepareSessionsSendCommunication(params: {
           ),
         );
       const sender = source[0]!;
-      // Task continuations keep their existing task owner. Ordinary peer input
-      // transfers to the Gateway pending-input owner, independent of the sender turn.
+      // A safely refused volatile steer needs pending-input recovery even for an
+      // owned task. Resume keeps its existing task owner and never uses this path.
       if (
         context &&
-        !ownedTask &&
+        (!ownedTask || requireDurableDelivery) &&
         !resume &&
         sender.entry &&
         hasRunId &&
@@ -603,6 +604,9 @@ export async function prepareSessionsSendCommunication(params: {
           dispatch,
         );
       }
+      if (requireDurableDelivery) {
+        throw new Error("Durable steering fallback requires an in-process delivery owner.");
+      }
       return dispatch();
     };
     return {
@@ -610,6 +614,8 @@ export async function prepareSessionsSendCommunication(params: {
       assertCurrent,
       refresh,
       callGateway,
+      callDurableGateway: <T>(request: Parameters<AgentToolGatewayRequestCaller>[0]) =>
+        callGateway<T>(request, true),
       ownedTask,
       sourceSandboxed: sandboxed,
       close,

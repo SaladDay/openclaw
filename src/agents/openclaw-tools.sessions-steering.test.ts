@@ -132,25 +132,29 @@ it.each([
   {},
   { mode: "steer" as const, alternateStore: true, refreshedDisplay: true },
   { mode: "steer" as const, hiddenRun: true },
+  { ownChild: true },
 ])(
-  "sessions_send persists steered provenance with mode $mode, alternate store $alternateStore, hidden run $hiddenRun, refreshed display $refreshedDisplay",
+  "sessions_send persists steered provenance with mode $mode, alternate store $alternateStore, hidden run $hiddenRun, refreshed display $refreshedDisplay, own child $ownChild",
   async ({
     mode,
     alternateStore,
     hiddenRun,
     refreshedDisplay,
+    ownChild,
   }: {
     mode?: "steer";
     alternateStore?: boolean;
     hiddenRun?: boolean;
     refreshedDisplay?: boolean;
+    ownChild?: boolean;
   }) => {
     const runId = "hidden-sessions-send-steering-run";
-    const runScopedCallerKey =
-      mode === "steer"
+    const runScopedCallerKey = ownChild
+      ? "agent:leasing-ops:subagent:active-child"
+      : mode === "steer"
         ? "agent:leasing-ops:dashboard:active-target"
         : "agent:leasing-ops:cron:monthly-utility:run:run-fast";
-    const requesterKey = "agent:re-portal:main";
+    const requesterKey = ownChild ? "agent:leasing-ops:main" : "agent:re-portal:main";
     const dir = tempDirs.make("openclaw-sessions-steered-provenance-");
     const scope = {
       agentId: "leasing-ops",
@@ -169,7 +173,17 @@ it.each([
           : scope.storePath,
       },
     };
-    await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: Date.now() });
+    if (ownChild) {
+      await upsertSessionEntryCore(
+        { ...scope, sessionKey: requesterKey },
+        { sessionId: "parent-session", updatedAt: Date.now() },
+      );
+    }
+    await upsertSessionEntryCore(scope, {
+      sessionId: scope.sessionId,
+      updatedAt: Date.now(),
+      ...(ownChild ? { spawnedBy: requesterKey, spawnDepth: 1 } : {}),
+    });
     const sessionManager = SessionManager.open(scope, dir);
     guardSessionManager(sessionManager);
     const { session } = await createTestSession({ sessionManager });
@@ -257,7 +271,7 @@ it.each([
         config: testConfig,
       });
 
-      if (mode === "steer") {
+      if (mode === "steer" || ownChild) {
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       }
       const caller = createSessionsSendTestCaller(requesterKey);
@@ -276,15 +290,18 @@ it.each([
           timeoutSeconds: 0,
         }),
       );
+      let acknowledged = false;
+      void send.then(() => {
+        acknowledged = true;
+      });
       pending.push(send);
       await Promise.race([queued.promise, send, prompt]);
       expect(session.pendingMessageCount).toBe(1);
-      if (mode === "steer") {
-        // The active response is still held: an admission-only send must not
-        // withdraw guidance when the unrelated reply-wait deadline expires.
+      if (mode === "steer" || ownChild) {
+        // A reply-wait deadline cannot turn volatile steering into a durable ACK.
         await vi.advanceTimersByTimeAsync(30_000);
         vi.useRealTimers();
-        expect((await send).details).toMatchObject({ status: "accepted" });
+        expect(acknowledged).toBe(false);
         expect(session.pendingMessageCount).toBe(1);
         expect(
           SessionManager.open(scope, dir)
@@ -302,7 +319,6 @@ it.each([
         delivery: { status: "skipped" },
       });
       expect(queueMessage).toHaveBeenCalledOnce();
-      expect(queueMessage.mock.calls[0]?.[1]?.waitForTranscriptCommit).toBe(mode !== "steer");
       expect(queueMessage.mock.calls[0]?.[1]?.isInboundUserMessage).toBeUndefined();
       const entries = SessionManager.open(scope, dir).getEntries();
       expect(
@@ -327,12 +343,17 @@ it.each([
         false,
       );
       await waitForSessionParticipantRecording(scope);
-      expect(listSessionParticipantsReadOnly(scope).get(runScopedCallerKey)).toEqual([
-        expect.objectContaining({
-          identity: { type: "agent", id: "re-portal" },
-          contributionCount: 1,
-        }),
-      ]);
+      const participants = listSessionParticipantsReadOnly(scope).get(runScopedCallerKey);
+      if (ownChild) {
+        expect(participants).toBeUndefined();
+      } else {
+        expect(participants).toEqual([
+          expect.objectContaining({
+            identity: { type: "agent", id: "re-portal" },
+            contributionCount: 1,
+          }),
+        ]);
+      }
     } finally {
       vi.useRealTimers();
       // Release even a late provider callback, then join work before fixture teardown.
