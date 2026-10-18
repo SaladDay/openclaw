@@ -1,4 +1,5 @@
 /* @vitest-environment jsdom */
+import { expectDefined } from "@openclaw/normalization-core/expect";
 import { createSignal } from "solid-js";
 import { expect, it, vi } from "vitest";
 import { mountSolid } from "../../test-helpers/mount-solid.ts";
@@ -64,10 +65,11 @@ it("loads capability dialogs only when opened and retains their live native cont
   const select = view.container.querySelector("select");
   const details = view.container.querySelector("details")!;
   details.open = true;
-  setState({ ...initial, library: { ...library, file: read.files[0].path } });
+  const file = expectDefined(read.files[0], "library fixture file");
+  setState({ ...initial, library: { ...library, file: file.path } });
   await waitForSolid(() =>
     expect(view.container.querySelector("textarea")?.value).toBe(
-      read.files[0].content.replaceAll("\r\n", "\n"),
+      file.content.replaceAll("\r\n", "\n"),
     ),
   );
   expect(view.container.querySelector("openclaw-modal-dialog")).toBe(modal);

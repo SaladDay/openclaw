@@ -21,6 +21,12 @@ type IconGridFinding = {
 const geometry =
   /^(?:display|box-sizing|(?:min-|max-)?(?:width|height)|padding(?:-.+)?|border(?:-.+)?|(?:place|align|justify)-(?:items|content|self)|grid(?:-.+)?|gap|position|transform|margin(?:-.+)?)$/u;
 
+// Takes unknown: narrowing selectorParser.Node (which includes Selector) makes
+// TypeScript 7.1 report TS5115 on the library's self-referential Selector type.
+function isCompoundEdge(node: unknown): boolean {
+  return node === undefined || selectorParser.isCombinator(node);
+}
+
 function px(value: string): number | undefined {
   if (value === "0" || value === "0px") {
     return 0;
@@ -179,10 +185,7 @@ function matchesRule(
         const removeUnknown = (
           node: selectorParser.Attribute | selectorParser.Identifier | selectorParser.Pseudo,
         ) => {
-          if (
-            (node.prev() === undefined || selectorParser.isCombinator(node.prev())) &&
-            (node.next() === undefined || selectorParser.isCombinator(node.next()))
-          ) {
+          if (isCompoundEdge(node.prev()) && isCompoundEdge(node.next())) {
             node.replaceWith(selectorParser.universal({ value: "*" }));
           } else {
             node.remove();
