@@ -32,6 +32,7 @@ import {
 import type { GatewayCronState } from "./server-cron.js";
 import type { GatewayClient } from "./server-methods/types.js";
 import { expectCronJobIdFromResponse } from "./server.cron.assertions.test-support.js";
+import { expectCronRunHistoryPages } from "./server.cron.run-history.test-support.js";
 import {
   agentCommandMock,
   connectOk,
@@ -600,28 +601,12 @@ describe("gateway server cron", () => {
       deliveryStatus: "not-requested",
     });
 
-    const runsRes = await directCronReq(cronState, "cron.runs", { id: jobId, limit: 50 });
-    expect(runsRes.ok).toBe(true);
-    const entries = (runsRes.payload as { entries?: unknown } | null)?.entries;
-    expect(Array.isArray(entries)).toBe(true);
-    expect((entries as Array<Record<string, unknown>>).at(-1)).toMatchObject({
+    await expectCronRunHistoryPages({
+      storePath: cronState.storePath,
       jobId,
-      jobName: "log test",
-      summary: "hello",
-      deliveryStatus: "not-requested",
-      runId: manualRunId,
+      manualRunId,
+      request: (params) => directCronReq(cronState, "cron.runs", params),
     });
-    const allRunsRes = await directCronReq(cronState, "cron.runs", {
-      scope: "all",
-      limit: 50,
-      statuses: ["ok"],
-    });
-    expect(allRunsRes.ok).toBe(true);
-    const allEntries = (allRunsRes.payload as { entries?: unknown } | null)?.entries;
-    expect(Array.isArray(allEntries)).toBe(true);
-    expect((allEntries as Array<{ jobId?: unknown }>).some((entry) => entry.jobId === jobId)).toBe(
-      true,
-    );
 
     const writerAddResult = await cronState.cron.add({
       name: "writer log test",

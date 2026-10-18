@@ -64,6 +64,7 @@ export type CronProps = {
   runsDeliveryStatuses: CronDeliveryStatus[];
   runsQuery: string;
   runsSortDir: CronSortDir;
+  runsSortBy?: "time" | "status";
   agentSuggestions: string[];
   modelSuggestions: string[];
   thinkingSuggestions: string[];
@@ -94,6 +95,7 @@ export type CronProps = {
     cronRunsDeliveryStatuses?: CronDeliveryStatus[];
     cronRunsQuery?: string;
     cronRunsSortDir?: CronSortDir;
+    cronRunsSortBy?: "time" | "status";
   }) => void | Promise<void>;
   onHighlightedRun?: (element: HTMLElement, link: string) => () => void;
   onViewRunTranscript?: (entry: CronRunLogEntry, trigger: HTMLButtonElement) => void;

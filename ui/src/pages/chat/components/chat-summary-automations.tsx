@@ -9,23 +9,26 @@ import { createInitialCronState } from "../../../lib/cron/state.ts";
 import { createGatewayConnectionLifecycle } from "../../../lib/gateway-connection-lifecycle.ts";
 import { canCallGatewayMethod, canPresentGatewayMethod } from "../../../lib/gateway-methods.ts";
 import { shouldHandleNavigationClick } from "../../../lib/navigation-click.ts";
-import { formatCronSchedule } from "../../../lib/presenter.ts";
 import { useOptionalApplication } from "../../../lib/reactive/context.ts";
 import { t } from "../../../lib/reactive/i18n.ts";
 import { listen } from "../../../lib/reactive/listener.ts";
 import { resolveUiConversationIdentity } from "../../../lib/sessions/session-key.ts";
+import { HoverMarquee } from "../../../lib/solid/hover-marquee.tsx";
+import { ChatDetailsDesktopSection } from "./chat-details-desktop-section.tsx";
 import "../../../styles/chat/summary-automations.css";
+import { sessionAutomationSchedule } from "./session-automation-schedule.ts";
 
-type Props = {
+export type SessionAutomationInventoryProps = {
   gateway: ApplicationGateway | undefined;
   sessionKey: string;
   presented: boolean;
-  onNavigate?: (jobId: string) => void;
 };
 
-export function ChatSummaryAutomations(props: Props) {
-  let host!: HTMLElement;
-  const context = useOptionalApplication();
+/** Create once in the session owner; desktop and mobile consume this same inventory. */
+export function createSessionAutomationInventory(
+  props: SessionAutomationInventoryProps,
+  host: () => HTMLElement | undefined,
+) {
   // Unrelated parent prop replacements must not reset inventory or presentation.
   const gateway = createMemo(() => props.gateway);
   const sessionKey = createMemo(() => props.sessionKey);
@@ -42,7 +45,10 @@ export function ChatSummaryAutomations(props: Props) {
   // Imperative request admission samples live presentation without owning its dependency.
   const readPresented = () => untrack(presented);
   const visible = (isPresented = readPresented()) =>
-    active && host.isConnected && isPresented && host.ownerDocument.visibilityState !== "hidden";
+    active &&
+    host()?.isConnected === true &&
+    isPresented &&
+    host()?.ownerDocument.visibilityState !== "hidden";
   const state = () => {
     revision();
     return cron;
@@ -93,7 +99,7 @@ export function ChatSummaryAutomations(props: Props) {
     publish();
   }
 
-  async function load(append = false, retry?: HTMLButtonElement, isPresented = readPresented()) {
+  async function load(append = false, isPresented = readPresented()) {
     const current = cron;
     if (
       !readAccess ||
@@ -109,27 +115,14 @@ export function ChatSummaryAutomations(props: Props) {
     const pending = loadCompactCronJobsPage(current, { append });
     publish();
     await pending;
-    if (cron !== current || !active || !host.isConnected) {
+    if (cron !== current || !active || !host()?.isConnected) {
       return;
     }
     showError = current.cronJobsError !== null;
-    const restoreFocus = retry && visible() && host.ownerDocument.activeElement === retry;
     publish();
-    if (restoreFocus && !showError) {
-      onSettled(() => {
-        if (
-          current === cron &&
-          visible() &&
-          host.ownerDocument.activeElement === host.ownerDocument.body
-        ) {
-          // Retry targets the first current child row after keyed list reconciliation.
-          host
-            .querySelector<HTMLElement>(
-              ".chat-summary__automation, .chat-summary__automation-message",
-            )
-            ?.focus();
-        }
-      });
+    // A cron event received during this request must not disappear behind admission.
+    if (dirty) {
+      void load();
     }
   }
 
@@ -156,13 +149,7 @@ export function ChatSummaryAutomations(props: Props) {
           requireAdvertisement: false,
         });
         if (changed || identity !== nextIdentity || readAccess !== nextReadAccess) {
-          reset(
-            source,
-            key,
-            identity === nextIdentity &&
-              readAccess === nextReadAccess &&
-              snapshot.phase !== "connected",
-          );
+          reset(source, key, identity === nextIdentity && readAccess === nextReadAccess);
           identity = nextIdentity;
         }
         if (dirty) {
@@ -187,7 +174,7 @@ export function ChatSummaryAutomations(props: Props) {
   createEffect(presented, (value) => {
     dirty ||= !value;
     if (value) {
-      void load(false, undefined, value);
+      void load(false, value);
     }
   });
   onSettled(() => {
@@ -196,7 +183,7 @@ export function ChatSummaryAutomations(props: Props) {
         void load();
       }
     };
-    const stopVisibility = listen(host.ownerDocument, "visibilitychange", activate);
+    const stopVisibility = listen(host()!.ownerDocument, "visibilitychange", activate);
     const stopFocus = listen(globalThis, "focus", activate);
     activate();
     return () => {
@@ -206,8 +193,98 @@ export function ChatSummaryAutomations(props: Props) {
     };
   });
 
-  const loading = () => state().cronLoading || state().cronJobsLoadingMore;
-  const loaded = () => state().cronJobsSnapshotRevision !== null;
+  return {
+    jobs: (): readonly CronCompactJob[] => state().cronJobs,
+    total: () => state().cronJobsTotal,
+    hasMore: () => state().cronJobsHasMore,
+    loading: () => state().cronLoading || state().cronJobsLoadingMore,
+    loaded: () => state().cronJobsSnapshotRevision !== null,
+    connected: () => state().connected,
+    available: () => readable() && Boolean(state().cronSessionFilter),
+    readable,
+    error,
+    refresh: () => load(),
+    loadMore: () => load(true),
+  };
+}
+
+export type SessionAutomationInventory = ReturnType<typeof createSessionAutomationInventory>;
+
+export type ChatSummaryAutomationsProps = SessionAutomationInventoryProps & {
+  /** Supplied only by the native desktop Details composition. */
+  desktop?: { expanded: boolean; onExpandedChange: (expanded: boolean) => void };
+  /** Stable session-owned instance shared with mobile, when supplied by the parent. */
+  inventory?: SessionAutomationInventory;
+  /** A positive native fact only; false does not exclude paused automations. */
+  hasAutomation?: boolean;
+  onNavigate?: (jobId: string) => void;
+};
+
+export function ChatSummaryAutomations(props: ChatSummaryAutomationsProps) {
+  let host!: HTMLElement;
+  const context = useOptionalApplication();
+  const inventory =
+    untrack(() => props.inventory) ?? createSessionAutomationInventory(props, () => host);
+  const [shown, setShown] = createSignal(10);
+  const presented = createMemo(() => props.presented);
+  const sessionKey = createMemo(() => props.sessionKey);
+  createEffect(
+    () => [presented(), sessionKey()] as const,
+    () => {
+      setShown(10);
+    },
+  );
+  const jobs = () => inventory.jobs().slice(0, shown());
+  const hasCachedRows = () => inventory.jobs().length > shown();
+  const more = () => hasCachedRows() || (inventory.hasMore() && !inventory.error());
+
+  async function reveal(button: HTMLButtonElement) {
+    const key = props.sessionKey;
+    const first = jobs().length;
+    const count = shown() + 10;
+    // Revealing retained rows needs no network request, even during a failed refresh.
+    if (!hasCachedRows()) {
+      if (
+        inventory.error() ||
+        inventory.loading() ||
+        !inventory.connected() ||
+        !inventory.hasMore()
+      ) {
+        return;
+      }
+      await inventory.loadMore();
+      if (inventory.error()) {
+        return;
+      }
+    }
+    if (props.sessionKey !== key || !props.presented || !host.isConnected) {
+      return;
+    }
+    setShown(Math.min(count, inventory.jobs().length));
+    if (host.ownerDocument.activeElement === button) {
+      onSettled(() =>
+        host.querySelectorAll<HTMLElement>(".chat-summary__automation")[first]?.focus(),
+      );
+    }
+  }
+
+  async function retry(button: HTMLButtonElement) {
+    const key = props.sessionKey;
+    const focused = host.ownerDocument.activeElement === button;
+    await inventory.refresh();
+    if (props.sessionKey !== key || inventory.error() || !props.presented) {
+      return;
+    }
+    // Only move focus when the successful retry removed the focused control.
+    if (focused) {
+      onSettled(() => {
+        if (host.ownerDocument.activeElement === host.ownerDocument.body) {
+          host.querySelector<HTMLElement>(".chat-summary__automation")?.focus();
+        }
+      });
+    }
+  }
+
   function jobState(job: CronCompactJob) {
     if (job.autoDisabled) {
       return t("chat.sessionDetails.automationAttention");
@@ -215,26 +292,34 @@ export function ChatSummaryAutomations(props: Props) {
     if (!job.enabled) {
       return t("chat.sessionDetails.automationPaused");
     }
-    return state().connected && job.runningAtMs !== undefined
-      ? t("common.running")
-      : job.schedule
-        ? formatCronSchedule({ schedule: job.schedule })
-        : t("chat.sessionDetails.automationEnabled");
+    if (inventory.connected() && job.runningAtMs !== undefined) {
+      return t("common.running");
+    }
+    return job.schedule ? sessionAutomationSchedule(job.schedule) : "";
   }
   const content = () => (
-    <div class="chat-summary__automations" aria-busy={loading() ? "true" : "false"}>
-      {!state().connected && loaded() && (
-        <div class="chat-summary__automation-message" role="status">
-          {t("chat.sessionDetails.automationOffline")}
-        </div>
-      )}
-      <For each={state().cronJobs} keyed={(job) => job.id}>
+    <div class="chat-summary__automations" aria-busy={inventory.loading() ? "true" : "false"}>
+      <For each={jobs()} keyed={(job) => job.id}>
         {(job) => {
+          let row: HTMLAnchorElement | undefined;
           const search = () => `?${new URLSearchParams({ job: job().id })}`;
+          const running = () =>
+            inventory.connected() &&
+            job().enabled &&
+            !job().autoDisabled &&
+            job().runningAtMs !== undefined;
+          const state = createMemo(() => jobState(job()));
+          const metadataTitle = () => {
+            const value = job();
+            const timezone = value.schedule?.kind === "cron" ? value.schedule.tz : undefined;
+            return timezone ? `${state()} (${timezone})` : props.desktop ? undefined : state();
+          };
           return (
             <a
+              ref={(element) => (row = element)}
               class="chat-summary__automation"
               href={`${pathForRoute("cron", context?.basePath ?? "")}${search()}`}
+              title={props.desktop ? undefined : job().name.trim() || job().id}
               onClick={(event) => {
                 if (shouldHandleNavigationClick(event) && (props.onNavigate || context)) {
                   event.preventDefault();
@@ -248,65 +333,121 @@ export function ChatSummaryAutomations(props: Props) {
             >
               <span class="chat-summary__automation-icon" aria-hidden="true">
                 <Icon name="clock" />
+                {!job().enabled && !job().autoDisabled && (
+                  <span class="chat-summary__automation-paused">
+                    <Icon name="pause" />
+                  </span>
+                )}
+                {job().autoDisabled && <span class="chat-summary__automation-attention" />}
               </span>
-              <span class="chat-summary__automation-title">{job().name.trim() || job().id}</span>
-              <span class="chat-summary__automation-state" title={jobState(job())}>
-                {jobState(job())}
-              </span>
+              <HoverMarquee
+                class="chat-summary__automation-title"
+                content={job().name.trim() || job().id}
+                options={{ host: () => row }}
+              />
+              {state() && (
+                <span
+                  class={[
+                    "chat-summary__automation-state",
+                    { "is-attention": Boolean(job().autoDisabled) },
+                  ]}
+                  title={metadataTitle()}
+                >
+                  {running() ? (
+                    <>
+                      <span class="session-run-spinner" aria-hidden="true" />
+                      <span class="sr-only">{state()}</span>
+                    </>
+                  ) : (
+                    <HoverMarquee
+                      class="chat-summary__automation-metadata"
+                      content={state()}
+                      options={{ host: () => row, stationary: true }}
+                    />
+                  )}
+                </span>
+              )}
             </a>
           );
         }}
       </For>
-      {error() ? (
+      {inventory.error() && inventory.connected() && (
         <div class="chat-summary__automation-error">
-          <span role="status">{t("chat.sessionDetails.automationError")}</span>
+          <span role="status">
+            {t(
+              inventory.loaded()
+                ? "chat.sessionDetails.automationUpdateError"
+                : "chat.sessionDetails.automationError",
+            )}
+          </span>
           <button
             type="button"
-            class="chip chat-summary__automation-retry"
-            aria-disabled={loading() || !state().connected ? "true" : "false"}
-            onClick={(event) => void load(false, event.currentTarget)}
+            class="chat-summary__automation-retry"
+            aria-disabled={inventory.loading() ? "true" : "false"}
+            onClick={(event) => void retry(event.currentTarget)}
           >
             {t("common.retry")}
           </button>
         </div>
-      ) : (
-        !loaded() && (
-          <div class="chat-summary__automation-message" role="status" tabindex={-1}>
-            {!state().cronSessionFilter
-              ? t("chat.sessionDetails.automationUnavailable")
-              : !state().connected
-                ? t("chat.sessionDetails.automationOffline")
-                : t("chat.sessionDetails.automationLoading")}
-          </div>
-        )
       )}
-      {state().cronJobsHasMore && !error() && (
+      {more() && (
         <button
           type="button"
-          class="chip chat-summary__automation-more"
-          disabled={loading() || !state().connected}
-          onClick={() => void load(true)}
+          class="chat-summary__automation-more"
+          disabled={!hasCachedRows() && (inventory.loading() || !inventory.connected())}
+          onClick={(event) => void reveal(event.currentTarget)}
         >
-          {t("chat.sessionDetails.automationMore")}
+          {t("chat.sessionDetails.automationShowMore")}
         </button>
       )}
     </div>
   );
   return (
     <openclaw-chat-summary-automations ref={(element) => (host = element)}>
-      <Show when={readable()}>
+      <Show when={inventory.readable()}>
         <Show
-          when={state().cronJobs.length > 0}
-          fallback={<Show when={props.gateway && (!loaded() || error())}>{content()}</Show>}
+          when={inventory.jobs().length > 0}
+          fallback={
+            <>
+              {props.hasAutomation &&
+                inventory.available() &&
+                inventory.connected() &&
+                !inventory.loaded() &&
+                !inventory.error() && (
+                  <div class="chat-summary__automation-pending" role="status">
+                    {t("chat.sessionDetails.automations")}
+                    <span class="session-run-spinner" aria-hidden="true" />
+                    <span class="sr-only">{t("chat.sessionDetails.automationLoading")}</span>
+                  </div>
+                )}
+              {inventory.error() && inventory.connected() && content()}
+            </>
+          }
         >
-          <details class="chat-details__group" data-details-group="automations" open>
-            <summary class="chat-details__caption">
-              {t("chat.sessionDetails.automations")}
-              <span>{state().cronJobsTotal ?? state().cronJobs.length}</span>
-              <Icon name="chevronDown" />
-            </summary>
-            {content()}
-          </details>
+          <Show
+            when={props.desktop}
+            fallback={
+              <details class="chat-details__group" data-details-group="automations" open>
+                <summary class="chat-details__caption">
+                  {t("chat.sessionDetails.automations")}
+                  <Icon name="chevronDown" />
+                </summary>
+                {content()}
+              </details>
+            }
+          >
+            {(desktop) => (
+              <ChatDetailsDesktopSection
+                section="automations"
+                title={t("chat.sessionDetails.automations")}
+                expanded={desktop().expanded}
+                presented={props.presented}
+                onExpandedChange={(expanded) => desktop().onExpandedChange(expanded)}
+              >
+                {content()}
+              </ChatDetailsDesktopSection>
+            )}
+          </Show>
         </Show>
       </Show>
     </openclaw-chat-summary-automations>
