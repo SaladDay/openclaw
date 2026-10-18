@@ -19,6 +19,7 @@ import {
   anchorFromNavigationEvent,
   shouldHandleNavigationClick,
 } from "../../../lib/navigation-click.ts";
+import { elementRef } from "../../../lib/reactive/element-ref.ts";
 import { t } from "../../../lib/reactive/i18n.ts";
 import { listen } from "../../../lib/reactive/listener.ts";
 import { createParkedProjection } from "../../../lib/reactive/parked-projection.ts";
@@ -149,7 +150,9 @@ export function ChatThread(input: {
           height: CHAT_HISTORY_BOUNDARY_HEIGHT_PX,
         }
       : null;
-  const historySentinel = <div class="chat-history-sentinel" />;
+  const historySentinel = (
+    <div class="chat-history-sentinel" ref={[elementRef(input.props.onHistorySentinelRef)]} />
+  );
   const sentinel = () => (input.props.historyPagination ? historySentinel : undefined);
   const contents = createMemo(() => {
     if (routeLoading()) {
@@ -252,6 +255,7 @@ export function ChatThread(input: {
         onPointerUp={(event) => handleTranscriptPointerUp(event, input.props)}
       >
         <span
+          ref={[elementRef(input.props.onTranscriptAnnouncementRef)]}
           class="chat-transcript-announcement sr-only"
           role="status"
           aria-live={input.props.announceTranscript !== false ? "polite" : "off"}

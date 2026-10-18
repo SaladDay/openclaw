@@ -7,6 +7,7 @@ import "../../../components/mcp-app-catalog.tsx";
 import "../../../components/solid/mcp-app-context-strip.tsx";
 import "../../../components/mcp-app-resources.tsx";
 import { clearCompositionEnd } from "../../../lib/ime.ts";
+import { elementRef } from "../../../lib/reactive/element-ref.ts";
 import { t } from "../../../lib/reactive/i18n.ts";
 import { liveValue } from "../../../lib/reactive/live-value.ts";
 import { detectTextDirection } from "../../../lib/text-direction.ts";
@@ -233,7 +234,7 @@ export function renderChatComposerView(
   });
   const fallbackStatus = createMemo(() => renderFallbackIndicatorSolid(props.fallbackStatus));
   return (
-    <div class="agent-chat__composer-shell">
+    <div class="agent-chat__composer-shell" ref={[elementRef(props.onComposerShellRef)]}>
       <div class="chat-footer__context">
         {props.footerContent}
         <div class="agent-chat__composer-notices">
