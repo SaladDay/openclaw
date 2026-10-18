@@ -43,7 +43,7 @@ import { showToast } from "../../lib/toast.ts";
 import { runControlUiPluginAction } from "../../plugins/control-ui-actions.ts";
 import { ChatPaneContext } from "./chat-pane-context.ts";
 import { ChatPaneHeaderMemo } from "./chat-pane-header-memo.ts";
-import { headerSessionMetadataPatch } from "./chat-pane-session-metadata-patch.ts";
+import { headerSessionMetadataPatch, renameSession } from "./chat-pane-session-metadata-patch.ts";
 import { chatSessionPresentationTitle } from "./chat-pane-session-presentation.ts";
 import { resolveChatAgentId, selectedChatSessionRow } from "./chat-state-route.ts";
 import type { HeaderMenuAction } from "./components/chat-header-session-menu.ts";
@@ -198,9 +198,8 @@ export abstract class ChatPaneSessionMenu extends ChatPaneContext {
       openEditor(action.editor, action.path);
       return;
     }
-    if (action.kind === "rename") {
-      this.beginHeaderRename(row);
-      return;
+    if (action.kind === "rename" && !this.mergedChrome) {
+      return this.beginHeaderRename(row);
     }
     if (
       action.kind === "copy-session-id" ||
@@ -345,6 +344,8 @@ export abstract class ChatPaneSessionMenu extends ChatPaneContext {
           { resolveSession: resolveCurrentSession },
         );
       switch (action.kind) {
+        case "rename":
+          return await renameSession(operations, host, row, scope, this.state ?? null);
         case "toggle-involving-me":
           await operations.setSessionInvolvement(host, session, !row.hiddenFromInvolvingMe, scope);
           break;

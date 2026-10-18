@@ -281,8 +281,8 @@ export async function runBatchSessionAction(
 }
 
 export async function renameSession(
-  deps: SessionOrganizerDependencies,
-  session: SidebarRecentSession,
+  deps: SessionActionHost,
+  session: SessionActionRow & Pick<SidebarRecentSession, "renameValue" | "userLabel">,
   scope: SidebarSessionMutationScope,
 ): Promise<void> {
   await showInputDialog({

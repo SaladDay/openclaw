@@ -732,6 +732,12 @@ export const en: TranslationMap & {
   sessionsView: {
     advanced: "Advanced",
     copyDetails: "Copy details",
+    searchGroups: "Search groups",
+    unassigned: "Unassigned",
+    mobileConversation: "Conversation",
+    mobileCopyPreviewLink: "Copy preview link",
+    mobileCopySessionId: "Copy session ID",
+    mobileCopyMarkdown: "Copy as Markdown",
     copyLink: "Copy link",
     communication: {
       title: "Cross-session messaging",
