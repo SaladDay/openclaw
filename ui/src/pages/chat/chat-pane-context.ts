@@ -3,7 +3,7 @@ import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/c
 import { resolveControlUiAuthToken } from "../../app/control-ui-auth.ts";
 import { gatewayPresentationScope } from "../../app/gateway-presentation-scope.ts";
 import {
-  isBrowserPanelSurfaceAvailable,
+  browserPanelSurfaceUnavailableReason,
   isDesktopPanelAvailable,
 } from "../../app/panel-availability.ts";
 import { canUseQuestionPrompts } from "../../app/question-prompt-client.ts";
@@ -560,7 +560,9 @@ export abstract class ChatPaneContext extends ChatPaneLifecycle {
       snapshot,
       this.context.config.current.terminalEnabled,
     );
-    state.browserPanelAvailable = isBrowserPanelSurfaceAvailable(snapshot);
+    const browserUnavailableReason = browserPanelSurfaceUnavailableReason(snapshot);
+    state.browserPanelUnavailableReason = browserUnavailableReason;
+    state.browserPanelAvailable = browserUnavailableReason === null;
     const desktopPanelAvailable = isDesktopPanelAvailable(snapshot);
     const sidebarSessionKey = canonicalUiSessionKeyForPersistence(state, state.sessionKey);
     const sidebarKeyChanged = sidebarSessionKey !== previousSidebarSessionKey;
