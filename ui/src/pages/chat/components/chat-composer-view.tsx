@@ -10,6 +10,7 @@ import "../../../components/mcp-app-resources.tsx";
 import { clearCompositionEnd } from "../../../lib/ime.ts";
 import { t } from "../../../lib/reactive/i18n.ts";
 import { detectTextDirection } from "../../../lib/text-direction.ts";
+import { PaneSubagentStop } from "../chat-pane-header-view.tsx";
 import { insertComposerDictation } from "../composer-dictation.ts";
 import "../../../styles/chat/composer-context-strip.css";
 import { ChatActivityPills } from "./chat-activity-pills.tsx";
@@ -153,6 +154,9 @@ export function renderChatComposerView(
                 )}
               </button>
             )}
+          </Show>
+          <Show when={banner().stop}>
+            {(stop) => <PaneSubagentStop onAbort={stop().onAbort} notice />}
           </Show>
           {banner().kind === "composer-replacement" &&
           banner().presentation !== "compact" &&
