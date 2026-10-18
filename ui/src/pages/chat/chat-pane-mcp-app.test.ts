@@ -227,7 +227,6 @@ describe("MCP app pane actions", () => {
   it("cancels a new-conversation admission wait when the source pane receives Stop", async () => {
     const f = fixture();
     const host = Object.assign(makeChatHost({ client: f.client, sessionKey: f.state.sessionKey }), {
-      requestUpdate: f.state.requestUpdate,
       handleSendChat: f.state.handleSendChat,
       handleOpenSidebar: f.state.handleOpenSidebar,
     });
