@@ -199,7 +199,7 @@ describe("Matrix sync ingress admission", () => {
       await expect(
         (await SqliteBackedMatrixSyncStore.create(storage.root)).getSavedSyncToken(),
       ).resolves.toBe("accepted-cursor");
-      expect(savedSyncContexts).toEqual([false, true]);
+      expect(savedSyncContexts).toEqual([false, false]);
       expect(errors).toEqual([failure]);
     } finally {
       release.resolve();
@@ -210,10 +210,11 @@ describe("Matrix sync ingress admission", () => {
   });
 
   it("joins an admitted write during shutdown without publishing its frozen cursor", async () => {
+    const seed = await SqliteBackedMatrixSyncStore.create(storage.root);
+    await seed.setSyncData(verificationSync("previous-cursor", cachedEventId));
+    seed.setSyncToken("previous-cursor");
+    await seed.flush();
     const store = await SqliteBackedMatrixSyncStore.create(storage.root);
-    await store.setSyncData(verificationSync("previous-cursor", cachedEventId));
-    store.setSyncToken("previous-cursor");
-    await store.flush();
     const client = new MatrixClient("https://example.org", "fixture-token", { syncStore: store });
     const entered = createDeferred<void>();
     const release = createDeferred<void>();

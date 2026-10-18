@@ -18,7 +18,9 @@ replay from delivering the same event twice within the retained replay window.
 Existing accounts migrate their committed replay markers automatically and need
 no configuration changes.
 
-Messages excluded as pre-login history remain excluded when cached sync is replayed.
+On a first login without a saved cursor, Matrix ignores pre-startup history for
+the entire sync session, including rooms joined later. Those messages remain
+excluded when cached sync is replayed.
 
 ## Streaming previews
 

@@ -147,7 +147,7 @@ export class SqliteBackedMatrixSyncStore extends MemoryStore {
     const handler = this.syncIngressHandler;
     if (handler) {
       await this.runSyncIngress(async () => {
-        await handler(syncData, { hasSavedSync: this.savedSync !== null });
+        await handler(syncData, { hasSavedSync: this.hadSavedSyncOnLoad });
         if (!this.frozen) {
           super.setSyncToken(syncData.next_batch);
           this.acceptSyncData(syncData);

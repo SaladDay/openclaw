@@ -32,7 +32,7 @@ describe("Matrix inbound restart recovery", () => {
       syncStore,
     });
 
-  it("keeps first-login history excluded when cached sync replays after restart", async () => {
+  it("keeps first-login history excluded across sync batches and cached replay", async () => {
     const store = await SqliteBackedMatrixSyncStore.create(storage.root);
     const client = createClient(store);
     const dispatch = vi.fn(
@@ -49,6 +49,16 @@ describe("Matrix inbound restart recovery", () => {
     });
     const unbind = await client.bindSyncIngress(first.admitSync);
     await store.setSyncData(response);
+    const lateRoomId = "!joined-later:example.org";
+    const laterSync = matrixSyncResponse(
+      "cursor-after-join",
+      lateRoomId,
+      { ...event, event_id: "$late-history" },
+      "previous-join",
+    );
+    const freshEvent = { ...event, event_id: "$fresh", origin_server_ts: 2_500 };
+    laterSync.rooms.join[lateRoomId]!.timeline!.events.push(freshEvent);
+    await store.setSyncData(laterSync);
     await store.flush();
     unbind();
     await first.stop();
@@ -69,8 +79,13 @@ describe("Matrix inbound restart recovery", () => {
       restarted.start();
       await restarted.waitForIdle();
       await restored.setSyncData(response);
+      await restored.setSyncData(laterSync);
       await restarted.waitForIdle();
-      expect(dispatch).not.toHaveBeenCalled();
+      expect(dispatch).toHaveBeenCalledExactlyOnceWith(
+        lateRoomId,
+        expect.objectContaining(freshEvent),
+        expect.any(Object),
+      );
       expect(await createQueue().listPending()).toEqual([]);
       expect(await createQueue().listClaims()).toEqual([]);
     } finally {
