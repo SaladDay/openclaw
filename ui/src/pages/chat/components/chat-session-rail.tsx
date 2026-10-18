@@ -37,7 +37,6 @@ function checksSummary(pullRequest: ControlUiSessionPullRequest): string | null 
   }
   return t("chat.rail.checksPending", { count: String(checks.running) });
 }
-const SESSION_RAIL_STARTER_KEYS = ["changed", "stopped", "remaining"] as const;
 const COMPANION_HINT_KEYS = {
   busy: "chat.rail.askBusy",
   "history-unavailable": "chat.rail.askHistoryUnavailable",
@@ -52,6 +51,7 @@ const COMPANION_HINT_KEYS = {
 >;
 
 type ChatSessionRailProps = {
+  presentation?: "desktop" | "mobile";
   sessionKey: string;
   digest: SessionObserverDigest | null;
   running: boolean;
@@ -191,6 +191,8 @@ function ChatSessionRailContent(props: ChatSessionRailProps) {
         )}
         {!props.companion.loading && !props.companion.turns.length && (
           <PanelEmptyState
+            // Side chat keeps its native desktop empty; only mobile adopts the shared variant.
+            presentation={props.presentation === "mobile" ? "mobile" : undefined}
             icon={<Icon name="bot" />}
             heading={t("chat.sidePanel.companion")}
             description={t("chat.rail.empty")}
@@ -303,23 +305,6 @@ function ChatSessionRailContent(props: ChatSessionRailProps) {
           }}
         </For>
       </div>
-      {!props.companion.turns.some((turn) => turn.status !== "failed") && (
-        <div class="chat-session-rail__starters">
-          <For each={SESSION_RAIL_STARTER_KEYS}>
-            {(key) => (
-              <button
-                class="chip chat-session-rail__starter"
-                type="button"
-                disabled={!props.connected}
-                onClick={() => props.onSubmit?.(t(`chat.rail.starters.${key}`))}
-              >
-                <Icon name="spark" />
-                <span>{t(`chat.rail.starters.${key}`)}</span>
-              </button>
-            )}
-          </For>
-        </div>
-      )}
       <openclaw-chat-comment-controller
         prop:paneId={`side-chat:${props.sessionKey}`}
         prop:props={attachmentProps()}
@@ -342,6 +327,7 @@ function ChatSessionRailContent(props: ChatSessionRailProps) {
 
 defineSolidBridge<ChatSessionRailProps>("openclaw-chat-session-rail", ChatSessionRailContent, {
   properties: {
+    presentation: { default: undefined, attribute: false },
     sessionKey: { default: "", attribute: false },
     digest: { default: null, attribute: false },
     running: { default: false, attribute: false },

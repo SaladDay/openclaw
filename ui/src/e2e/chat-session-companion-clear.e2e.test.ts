@@ -6,6 +6,7 @@ import { closeChatLayoutMenu, openChatLayoutMenu } from "../test-helpers/chat-la
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { takeControlUiViewportScreenshot } from "../test-helpers/control-ui-e2e-screenshot.ts";
 import {
+  controlUiBundledSettingsStorageKey,
   controlUiSessionUrl,
   installMockGateway,
   navigateToControlUiSession,
@@ -42,6 +43,7 @@ type CompanionSurface = {
 async function withCompanion(
   run: (surface: CompanionSurface) => Promise<void>,
   width = 1200,
+  placement: "main" | "side" = "main",
 ): Promise<void> {
   await suite.withPage(
     {
@@ -53,6 +55,42 @@ async function withCompanion(
         : {}),
     },
     async ({ page }) => {
+      // Desktop tabs reset on close. Exercise the retained Clear action in the
+      // supported main-pane layout, where drafts can be edited during reset.
+      if (width === 1200 && placement === "main") {
+        await page.addInitScript(
+          ({ key, sessionKey }) =>
+            localStorage.setItem(
+              key,
+              JSON.stringify({
+                sessionKey,
+                sidebarSessionLayouts: {
+                  [sessionKey]: {
+                    columns: [
+                      {
+                        id: "side-panel-column",
+                        side: "right",
+                        panels: [
+                          { id: "companion", slot: "companion" },
+                          { id: "conversation", slot: "conversation" },
+                        ],
+                        activePanelId: "conversation",
+                        width: 480,
+                        height: 360,
+                      },
+                    ],
+                    mainPanelId: "companion",
+                    open: true,
+                  },
+                },
+              }),
+            ),
+          {
+            key: controlUiBundledSettingsStorageKey(suite.server.baseUrl),
+            sessionKey: initiatingSessionKey,
+          },
+        );
+      }
       const gateway = await installMockGateway(page, {
         methodResponses: {
           "sessions.companion.reset": {
@@ -92,26 +130,85 @@ async function withCompanion(
       await openChatSidePanelType(page, "Side chat");
       const companion = page.locator("openclaw-chat-session-rail");
       await companion.getByText(answer, { exact: true }).waitFor();
-      // The embedded rail contributes its Clear action to the shared Layout menu.
+      if (width === 1200 && placement === "main") {
+        await page.locator('[data-panel-slot="companion"][data-region="main"]').waitFor();
+      }
+      // Mobile retains its existing Layout action; the desktop main pane has
+      // its native header action. Desktop side tabs have neither Clear button.
       const clearButton = page.getByRole("button", { name: "Clear side chat", exact: true });
       await run({ clearButton, companion, gateway, page });
     },
   );
 }
 
-async function clearCompanion(clearButton: Locator): Promise<void> {
+async function hideMobileCompanion(page: Page, gateway: MockGatewayControls): Promise<boolean> {
+  const host = page.locator(".chat-mobile-host");
+  const close = host.getByRole("button", { name: "Close", exact: true });
+  if (!(await close.isVisible())) {
+    return false;
+  }
+  const resetCount = (await gateway.getRequests("sessions.companion.reset")).length;
+  await close.click();
+  await host.waitFor({ state: "hidden" });
+  expect(await gateway.getRequests("sessions.companion.reset")).toHaveLength(resetCount);
+  return true;
+}
+
+async function clearCompanion(clearButton: Locator, gateway: MockGatewayControls): Promise<void> {
+  if (await clearButton.isVisible()) {
+    await clearButton.click();
+    return;
+  }
   const page = clearButton.page();
+  const reopen = await hideMobileCompanion(page, gateway);
   await openChatLayoutMenu(page);
   await clearButton.click();
   await closeChatLayoutMenu(page);
+  if (reopen) {
+    await openChatSidePanelType(page, "Side chat");
+  }
 }
 
 suite.define(() => {
+  it("keeps a desktop side tab open on reset failure and closes it after confirmation", async () => {
+    await withCompanion(
+      async ({ clearButton, companion, gateway, page }) => {
+        expect(await clearButton.count()).toBe(0);
+        const close = page.getByRole("button", { name: "Close Side chat", exact: true });
+        const input = companion.getByRole("textbox", { name: "Ask in side chat", exact: true });
+        await input.fill("Keep this draft if closing fails");
+        await close.click();
+        await gateway.waitForRequest("sessions.companion.reset");
+        await page.getByRole("alert").filter({ hasText: resetError }).waitFor();
+        await companion.getByText(answer, { exact: true }).waitFor();
+        expect(await input.inputValue()).toBe("Keep this draft if closing fails");
+
+        const resetCount = (await gateway.getRequests("sessions.companion.reset")).length;
+        await gateway.deferNext("sessions.companion.reset");
+        await close.click();
+        await gateway.waitForRequest("sessions.companion.reset", { after: resetCount });
+        expect(await gateway.getRequests("sessions.companion.reset")).toHaveLength(resetCount + 1);
+        expect(await close.isVisible()).toBe(true);
+        await gateway.setMethodResponse("sessions.companion.state", { exchanges: [] });
+        await gateway.resolveDeferred("sessions.companion.reset", { ok: true });
+        await close.waitFor({ state: "hidden" });
+        await openChatSidePanelType(page, "Side chat");
+        await input.waitFor();
+        expect(await input.inputValue()).toBe("");
+        expect(await companion.getByText(answer, { exact: true }).count()).toBe(0);
+        expect(await gateway.getRequests("sessions.reset")).toHaveLength(0);
+        expect(await gateway.getRequests("chat.send")).toHaveLength(0);
+      },
+      1200,
+      "side",
+    );
+  });
+
   it.each([1200, 390])(
     "preserves the thread on reset failure and a newer draft after a successful retry at %ipx",
     async (width) => {
       await withCompanion(async ({ clearButton, companion, gateway, page }) => {
-        await clearCompanion(clearButton);
+        await clearCompanion(clearButton, gateway);
         await gateway.waitForRequest("sessions.companion.reset");
 
         const alert = page.getByRole("alert").filter({ hasText: resetError });
@@ -124,12 +221,16 @@ suite.define(() => {
           );
         }
 
+        const reopen = await hideMobileCompanion(page, gateway);
         await openChatDetails(page);
         await closeChatDetails(page);
         await alert.getByRole("button", { name: "Dismiss error" }).click();
+        if (reopen) {
+          await openChatSidePanelType(page, "Side chat");
+        }
         await gateway.setMethodResponse("sessions.companion.reset", { ok: true });
         await gateway.deferNext("sessions.companion.reset");
-        await clearCompanion(clearButton);
+        await clearCompanion(clearButton, gateway);
 
         await expect
           .poll(async () => (await gateway.getRequests("sessions.companion.reset")).length)
@@ -153,7 +254,7 @@ suite.define(() => {
   it("retains a question sent after Clear while its answer is pending", async () => {
     await withCompanion(async ({ clearButton, companion, gateway }) => {
       await gateway.deferNext("sessions.companion.reset");
-      await clearCompanion(clearButton);
+      await clearCompanion(clearButton, gateway);
       await gateway.waitForRequest("sessions.companion.reset");
       await gateway.deferNext("sessions.companion.ask");
       const input = companion.getByRole("textbox", { name: "Ask in side chat", exact: true });
@@ -236,7 +337,7 @@ suite.define(() => {
         await paste("old.png");
         await companion.getByRole("button", { name: "Remove old.png", exact: true }).waitFor();
         await gateway.deferNext("sessions.companion.reset");
-        await clearCompanion(clearButton);
+        await clearCompanion(clearButton, gateway);
         await gateway.waitForRequest("sessions.companion.reset");
         if (oldRead === "completed") {
           await reads.evaluate((proof) => proof.finish("old.png"));
@@ -272,7 +373,7 @@ suite.define(() => {
   it("does not publish a delayed reset rejection into a newly selected session", async () => {
     await withCompanion(async ({ clearButton, gateway, page }) => {
       await gateway.deferNext("sessions.companion.reset");
-      await clearCompanion(clearButton);
+      await clearCompanion(clearButton, gateway);
       await gateway.waitForRequest("sessions.companion.reset");
 
       await navigateToControlUiSession(page, nextSessionKey);
