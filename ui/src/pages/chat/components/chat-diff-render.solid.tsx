@@ -22,6 +22,7 @@ export function createDiffPresentation(props: {
   lines: readonly DiffLine[];
   file: DiffFilePaths;
   rows?: readonly SessionSplitDiffRow[];
+  wordDiffs?: boolean;
 }) {
   const [highlighted, setHighlighted] = createSignal<ReadonlyMap<DiffLine, DiffHighlightToken[]>>(
     new Map(),
@@ -35,10 +36,12 @@ export function createDiffPresentation(props: {
     return new Set([...(previous ?? [])].filter((line) => present.has(line)));
   });
   const rows = createMemo(() => props.rows ?? pairSessionDiffLines(props.lines));
-  const changes = createMemo(() => diffLineChangeRanges(rows()));
+  const changes = createMemo(() =>
+    props.wordDiffs === false ? null : diffLineChangeRanges(rows()),
+  );
   const rendered = createMemo(() => {
     const result = new Map(highlighted());
-    for (const [line, ranges] of changes()) {
+    for (const [line, ranges] of changes() ?? []) {
       const parts: DiffHighlightToken[] = [];
       let offset = 0;
       let rangeIndex = 0;
