@@ -18,7 +18,8 @@ export function useSessionPanel<Data extends SessionPanelData>(
   DataType: new (context: ApplicationContext, changed: () => void) => Data,
   clearSelection: () => void,
 ) {
-  const [revision, setRevision] = createSignal(0);
+  // Session observations may publish synchronously while another pane mounts.
+  const [revision, setRevision] = createSignal(0, { ownedWrite: true });
   const data = new DataType(useApplication(), () => setRevision((value) => value + 1));
   let identity = "";
   // The synchronous data owner handles scoped subscriptions and polling outside Solid.
