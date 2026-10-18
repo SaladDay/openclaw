@@ -40,8 +40,10 @@ through your secret manager, then run:
 OPENCLAW_LIVE_TEST=1 node scripts/run-vitest.mjs --config test/vitest/vitest.live.config.ts extensions/levanto/registration.live.test.ts
 ```
 
-The test sends one synthetic Boolean/Choice/Score batch with reasoning off and
-consumes the account's allowance. It skips without both the opt-in flag and key.
+The test makes five paid requests with reasoning off: four Boolean/Choice/Score/Tags
+batches using synthetic text, PNG, JPEG, and WebP evidence, followed by one Sort
+request. These requests consume the account's allowance and submit the synthetic
+images to Levanto. It skips without both the opt-in flag and key.
 It checks the registered V2 adapter and real transport, accepts native abstention,
 and validates reported usage when present. Prepared credentials are fixture input;
 the test does not exercise host credential discovery or change model selection.
