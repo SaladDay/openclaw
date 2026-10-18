@@ -415,14 +415,8 @@ export async function resolveMatrixIngressContent(config: {
       configuredBinding: _configuredBinding,
     });
     if (!ensured.ok) {
-      logInboundDrop({
-        log: logVerboseMessage,
-        channel: "matrix",
-        reason: "configured ACP binding unavailable",
-        target: _configuredBinding.spec.conversationId,
-      });
       discardReservedHistorySlot();
-      return undefined;
+      throw new Error(`Matrix configured ACP binding is unavailable: ${ensured.error}`);
     }
   }
   if (_runtimeBindingId) {
