@@ -32,6 +32,53 @@ describe("Matrix inbound restart recovery", () => {
       syncStore,
     });
 
+  it("keeps first-login history excluded when cached sync replays after restart", async () => {
+    const store = await SqliteBackedMatrixSyncStore.create(storage.root);
+    const client = createClient(store);
+    const dispatch = vi.fn(
+      async (_room: string, _event: MatrixRawEvent, lifecycle: ChannelIngressMonitorLifecycle) => {
+        await lifecycle.onAdopted();
+      },
+    );
+    const first = createMatrixIngressMonitor({
+      accountId: "default",
+      client,
+      startupMs: 2_000,
+      queue: createQueue(),
+      dispatch,
+    });
+    const unbind = await client.bindSyncIngress(first.admitSync);
+    await store.setSyncData(response);
+    await store.flush();
+    unbind();
+    await first.stop();
+    await closeOpenClawStateDatabaseAsync();
+    resetPluginStateStoreForTests();
+
+    const restored = await SqliteBackedMatrixSyncStore.create(storage.root);
+    const restartedClient = createClient(restored);
+    const restarted = createMatrixIngressMonitor({
+      accountId: "default",
+      client: restartedClient,
+      startupMs: 3_000,
+      queue: createQueue(),
+      dispatch,
+    });
+    const unbindRestart = await restartedClient.bindSyncIngress(restarted.admitSync);
+    try {
+      restarted.start();
+      await restarted.waitForIdle();
+      await restored.setSyncData(response);
+      await restarted.waitForIdle();
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(await createQueue().listPending()).toEqual([]);
+      expect(await createQueue().listClaims()).toEqual([]);
+    } finally {
+      unbindRestart();
+      await restarted.stop();
+    }
+  });
+
   it.each(["SIGTERM", "SIGKILL"] as const)(
     "replays an unadopted message exactly once after %s-style restart",
     async (shutdown) => {

@@ -13,7 +13,7 @@ import { createMatrixIngressMonitor } from "./ingress.js";
 describe("Matrix sync admission", () => {
   const storage = useSyncStoreFixture("openclaw-matrix-ingress-");
 
-  it("filters first-login history only, preserving raw replay and left-room events", async () => {
+  it("preserves raw replay and left-room events", async () => {
     const queue = createChannelIngressQueueForTests<{
       version: 1;
       roomId: string;
@@ -38,9 +38,6 @@ describe("Matrix sync admission", () => {
       },
     });
     try {
-      await monitor.admitSync(sync, { hasSavedSync: false });
-      expect(await queue.listPending()).toEqual([]);
-
       sync.rooms.leave = {
         "!left:example.org": {
           state: { events: [] },

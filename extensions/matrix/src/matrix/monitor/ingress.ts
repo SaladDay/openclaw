@@ -15,6 +15,7 @@ import { EventType } from "./types.js";
 type MatrixIngressEvent = {
   roomId: string;
   event: MatrixRawEvent;
+  historical?: boolean;
 };
 
 type MatrixIngressPayload = MatrixIngressEvent & { version: 1 };
@@ -84,7 +85,10 @@ export function createMatrixIngressMonitor(params: {
             : "Matrix event identity changed after durable admission",
         ),
     },
-    deliver: async ({ roomId, event }, lifecycle) => {
+    deliver: async ({ roomId, event, historical }, lifecycle) => {
+      if (historical) {
+        return;
+      }
       if (event.type === EventType.RoomMessageEncrypted && !params.client.crypto) {
         // The existing event listener explains how to enable encryption.
         return;
@@ -126,19 +130,20 @@ export function createMatrixIngressMonitor(params: {
         if (!isMessageEvent(event)) {
           continue;
         }
-        // A first login has no replay cursor; preserve its historical-message
-        // cutoff only at intake. Saved sync and queued retries must never use it.
-        if (
+        // Persist first-login exclusions too, so cached sync cannot revive them
+        // after a restart. The shared drain records their intentional non-delivery.
+        const historical =
           !hasSavedSync &&
           ((typeof event.origin_server_ts === "number" &&
             event.origin_server_ts < params.startupMs) ||
             (typeof event.origin_server_ts !== "number" &&
               typeof event.unsigned?.age === "number" &&
-              event.unsigned.age > 0))
-        ) {
-          continue;
-        }
-        events.push({ roomId, event: { ...event, room_id: roomId } });
+              event.unsigned.age > 0));
+        events.push({
+          roomId,
+          event: { ...event, room_id: roomId },
+          ...(historical ? { historical: true } : {}),
+        });
       }
     }
     await monitor.admitBatch(events);

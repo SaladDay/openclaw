@@ -18,6 +18,8 @@ replay from delivering the same event twice within the retained replay window.
 Existing accounts migrate their committed replay markers automatically and need
 no configuration changes.
 
+Messages excluded as pre-login history remain excluded when cached sync is replayed.
+
 ## Streaming previews
 
 Matrix reply streaming is opt-in. `streaming.mode` controls how OpenClaw delivers the in-flight assistant reply; `streaming.block.enabled` controls whether each completed block is kept as its own Matrix message.
