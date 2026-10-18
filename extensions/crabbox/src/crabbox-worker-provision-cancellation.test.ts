@@ -1,6 +1,6 @@
 import { setImmediate } from "node:timers/promises";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { openWarmImageStore } from "./crabbox-state.test-support.js";
 import { commandResult, nodeEnrollmentFixture } from "./crabbox-worker-provider.test-support.js";
 import {
@@ -14,6 +14,8 @@ import {
   PROFILE,
 } from "./crabbox-worker-warm-image.test-support.js";
 
+afterEach(() => vi.useRealTimers());
+
 it.each([
   "config",
   "warmup",
@@ -25,6 +27,7 @@ it.each([
   "checkpoint inspect",
   "checkpoint fork",
 ])("cancels %s without releasing its command or launching later work", async (phase) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const controller = new AbortController();
   const reason = new Error("worker stop requested");
   const started = createDeferred<void>();
@@ -89,18 +92,22 @@ it.each([
     .catch((error: unknown) => error)
     .finally(settled);
   await started.promise;
+  // Idle renewal is independent of the held command; settle its initial tick
+  // before observing whether cancellation launches later provisioning work.
+  await vi.advanceTimersByTimeAsync(0);
   const commandCount = calls.length;
   try {
     controller.abort(reason);
     await setImmediate();
     expect(commandSignal?.aborted).toBe(true);
     expect(settled).not.toHaveBeenCalled();
-    expect(calls).toHaveLength(commandCount);
+    expect(calls, calls.map(({ argv }) => argv[1]).join(", ")).toHaveLength(commandCount);
   } finally {
     closed.resolve();
     await operation;
   }
   expect(await operation).toBe(reason);
+  await vi.advanceTimersByTimeAsync(60 * 60_000);
   expect(calls).toHaveLength(commandCount);
   expect(warn).not.toHaveBeenCalled();
   await provider.destroy({ leaseId: LEASE_ID, profile: { ...profile, warmImage: false } });

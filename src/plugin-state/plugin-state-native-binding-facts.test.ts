@@ -107,6 +107,41 @@ describe("prepared plugin state effect guards", () => {
     });
   });
 
+  it("joins an earlier queued binding write before preparing another session guard", async () => {
+    await withOpenClawTestState({ label: "plugin-state-prepared-queue" }, async ({ env }) => {
+      const store = createPluginStateKeyedStore<string>("guard-test", {
+        namespace: "bindings",
+        maxEntries: 10,
+        env,
+      });
+      await store.register("session", "original");
+      const existing = await preparePluginStateRead(store, "session");
+      if (!existing) {
+        throw new Error("Expected the plugin-state owner to prepare a guard");
+      }
+      try {
+        const writing = store.register("peer-session", "peer");
+        expect(() => existing.read()).toThrow("authority is unavailable");
+        const preparing = preparePluginStateRead(store, "session").then((prepared) => {
+          if (!prepared) {
+            throw new Error("Expected the plugin-state owner to prepare a guard");
+          }
+          try {
+            // Preparation must join the writer, not just defer the refusal to the first read.
+            return prepared.read();
+          } finally {
+            prepared.release();
+          }
+        });
+        const [write, preparation] = await Promise.allSettled([writing, preparing]);
+        expect(write.status).toBe("fulfilled");
+        expect(preparation).toMatchObject({ status: "fulfilled", value: "original" });
+      } finally {
+        existing.release();
+      }
+    });
+  });
+
   it("keeps an uncertain publication denied after a later successful write or a fresh preparation", async () => {
     await withOpenClawTestState({ label: "plugin-state-unknown-guard" }, async ({ env }) => {
       const store = createPluginStateKeyedStore<string>("guard-test", {

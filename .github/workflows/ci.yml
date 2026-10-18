@@ -5858,6 +5858,10 @@ jobs:
 
       - *select_xcode_step
 
+      - name: Install Watch screenshot runtime
+        # The runner lists Watch device templates even when their runtime backing path is absent.
+        run: xcodebuild -downloadPlatform watchOS -buildVersion 27.0
+
       - name: Setup Node environment
         uses: ./.ci-harness/.github/actions/setup-node-env
         with:

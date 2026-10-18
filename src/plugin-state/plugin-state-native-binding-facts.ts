@@ -1,6 +1,7 @@
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { parseStoredJson } from "./plugin-state-error.js";
 import { readCommittedPluginStateObservationCache } from "./plugin-state-observation-cache.js";
+import { capturePluginStateMutationSettlement } from "./plugin-state-operation-epochs.js";
 import {
   assertPluginStatePublicationSettled,
   pluginStatePublication,
@@ -77,6 +78,13 @@ export async function capturePluginStateNativeBindingFacts(
   };
   try {
     if (authority) {
+      // Warm facts must join the same earlier writers as a worker read before becoming authority.
+      const settled = capturePluginStateMutationSettlement(context.admission.coordinationKey, [
+        scope,
+      ]);
+      if (settled) {
+        await settled;
+      }
       assertPluginStatePublicationSettled(identity());
     }
     const cached = readCommittedPluginStateObservationCache(identity(), scope);
