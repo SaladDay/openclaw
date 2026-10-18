@@ -2,6 +2,7 @@ import { EventType, MatrixError, MsgType, Preset } from "matrix-js-sdk/lib/matri
 import { EventStatus } from "matrix-js-sdk/lib/models/event-status.js";
 import type { Direction } from "matrix-js-sdk/lib/models/event-timeline.js";
 import { sha256Hex } from "openclaw/plugin-sdk/node-crypto-runtime";
+import type { MatrixSyncIngressHandler } from "../client/file-sync-store.js";
 import { formatMatrixErrorReason } from "../errors.js";
 import { MATRIX_REACTION_EVENT_TYPE } from "../reaction-common.js";
 import { MatrixClientBase } from "./client-base.js";
@@ -25,8 +26,6 @@ function isUnsupportedAuthenticatedMediaEndpointError(err: unknown): boolean {
     message.includes("not implemented")
   );
 }
-
-import type { MatrixSyncIngressHandler } from "../client/file-sync-store.js";
 
 export abstract class MatrixClientCore extends MatrixClientBase {
   async getUserId(): Promise<string> {

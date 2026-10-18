@@ -47,7 +47,7 @@ afterEach(async () => {
 });
 
 it.each(["plugin-to-global", "configured-stable", "configured-to-global"] as const)(
-  "preserves Matrix's prepared owner through a registered message: %s",
+  "preserves Matrix's prepared owner through the inbound handler: %s",
   async (scenario) => {
     const state = await createOpenClawTestState({ label: "matrix-route-carry" });
     cleanup = () => state.cleanup();
