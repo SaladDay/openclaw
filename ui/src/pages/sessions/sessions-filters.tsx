@@ -1,4 +1,6 @@
-import { createMemo, For } from "solid-js";
+import { createMemo, For, useContext } from "solid-js";
+import { ShellPresentationContext } from "../../app/app-shell-presentation.ts";
+import { isMobileNavLayout } from "../../app/mobile-nav-layout.ts";
 import { registryFor } from "../../components/overlay-registry.ts";
 import { Icon } from "../../components/solid/icon.tsx";
 import { Popover, type PopoverHandle } from "../../components/solid/popover.tsx";
@@ -54,6 +56,7 @@ const SESSION_GROUP_MODE_LABELS = {
 } as const satisfies Record<SessionsGroupBy, string>;
 
 export function SessionsAdvancedFilters(props: SessionsAdvancedFiltersProps): JSX.Element {
+  const shell = useContext(ShellPresentationContext);
   let trigger!: HTMLButtonElement;
   let searchInput!: HTMLInputElement;
   let popover: PopoverHandle | undefined;
@@ -135,7 +138,7 @@ export function SessionsAdvancedFilters(props: SessionsAdvancedFiltersProps): JS
               placeholder={t("sessionsView.searchPlaceholder")}
               value={props.searchQuery}
               onInput={(event) => props.onSearchChange(event.currentTarget.value)}
-              onKeyDown={(event: KeyboardEvent) => handleSessionsSearchKeydown(event, props)}
+              onKeyDown={(event: KeyboardEvent) => handleSessionsSearchKeydown(event, props, shell)}
             />
             <button
               type="button"
@@ -282,10 +285,12 @@ function handleSessionsSearchKeydown(
     sessionMenu: { key: string } | null;
     onSearchChange: (query: string) => void;
   },
+  shell: Readonly<{ navDrawerOpen: boolean }> | null,
 ) {
   // SAFETY: This listener is bound directly to the search input.
   const input = event.currentTarget as HTMLInputElement;
   const document = input.ownerDocument;
+  const overlays = registryFor(document);
   if (
     event.key !== "Escape" ||
     event.defaultPrevented ||
@@ -299,10 +304,9 @@ function handleSessionsSearchKeydown(
     !input.value ||
     props.sessionMenu ||
     document.openClawModalLayers?.size ||
-    registryFor(document).stack.some(
-      (overlay) => overlay.open && overlay.id !== "sessions-filter-popover",
-    ) ||
-    document.querySelector("dialog[open], [aria-modal='true'], openclaw-menu-surface")
+    (shell?.navDrawerOpen && isMobileNavLayout()) ||
+    overlays.stack.some((overlay) => overlay.open && overlay.id !== "sessions-filter-popover") ||
+    Array.from(overlays.nativePopovers).some((surface) => surface.open)
   ) {
     return;
   }

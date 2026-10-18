@@ -82,7 +82,11 @@ it("drops a pending response when the selected agent changes and shows the curre
   const view = await mount(request);
   await waitForSolid(() => expect(request.mock.calls.length).toBe(1));
   view.agentId = "other";
+  view.profileId = "openai:other";
+  expect(request.mock.calls[0]?.[2]?.signal?.aborted).toBe(true);
   await waitForSolid(() => expect(view.textContent).toContain("Account usage unavailable"));
+  expect(request).toHaveBeenCalledTimes(2);
+  expect(request.mock.lastCall?.[1]).toEqual({ agentId: "other", profileId: "openai:other" });
   stale.resolve();
   await stale.promise;
   flush();
@@ -93,6 +97,37 @@ it("drops a pending response when the selected agent changes and shows the curre
   view.client = null;
   await view.updateComplete;
   expect(view.textContent?.trim()).toBe("");
+});
+
+it("replaces a cancelled read when same-turn receipts return to the original account", async () => {
+  const stale = createDeferredCore();
+  let calls = 0;
+  const request = createGatewayRequestMock(async () => {
+    if (++calls === 1) {
+      await stale.promise;
+      return {
+        ...snapshot,
+        providers: [
+          { ...snapshot.providers[0], billing: [{ type: "balance", amount: 99, unit: "credits" }] },
+        ],
+      };
+    }
+    return snapshot;
+  });
+  const view = await mount(request);
+  await waitForSolid(() => expect(request).toHaveBeenCalledOnce());
+  view.agentId = "other";
+  view.agentId = "main";
+  expect(request.mock.calls[0]?.[2]?.signal?.aborted).toBe(true);
+  await waitForSolid(() => expect(request).toHaveBeenCalledTimes(2));
+  await waitForSolid(() => expect(view.textContent).toContain("12 credits"));
+  stale.resolve();
+  await stale.promise;
+  flush();
+  await view.updateComplete;
+  expect(request).toHaveBeenCalledTimes(2);
+  expect(view.textContent).toContain("12 credits");
+  expect(view.textContent).not.toContain("99 credits");
 });
 
 it("shows the empty state when Codex returns a snapshot without quota data", async () => {

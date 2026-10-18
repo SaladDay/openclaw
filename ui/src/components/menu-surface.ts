@@ -1,4 +1,5 @@
 import { occludeNativeBrowserSurface } from "../lib/native-overlay-occlusion.ts";
+import { registerNativePopover } from "./overlay-registry.ts";
 
 /**
  * Promotes a connected element into the browser popover top layer so transient
@@ -17,8 +18,16 @@ export function promoteToPopoverTopLayer(element: HTMLElement, surfaces: () => I
  * closing removes the element, which auto-hides the popover.
  */
 class MenuSurface extends HTMLElement {
+  private releaseRegistration?: () => void;
+
   connectedCallback() {
     promoteToPopoverTopLayer(this, () => this.children);
+    this.releaseRegistration = registerNativePopover(this);
+  }
+
+  disconnectedCallback() {
+    this.releaseRegistration?.();
+    this.releaseRegistration = undefined;
   }
 }
 

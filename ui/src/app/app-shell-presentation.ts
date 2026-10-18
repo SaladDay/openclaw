@@ -1,7 +1,13 @@
 import { createSignal } from "@solidjs/signals";
+import { createContext } from "solid-js";
 import type { GatewayStatusProps } from "../components/gateway-status.ts";
 import type { ShellRouteState } from "./app-host-route-state.ts";
 import { readNativeHistoryState } from "./native-web-chrome.ts";
+
+/** Descendants read the mounted shell owner; standalone pages have no drawer. */
+export const ShellPresentationContext = createContext<Readonly<
+  Pick<ShellPresentation, "navDrawerOpen">
+> | null>(null);
 
 /** Synchronous shell state publishes revisions; Solid commits settle its DOM waiters. */
 export class ShellPresentation {

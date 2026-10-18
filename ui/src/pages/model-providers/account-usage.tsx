@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, onCleanup, onSettled, Show } from "solid-js";
+import { createMemo, createSignal, For, onCleanup, onSettled, Show } from "solid-js";
 import type { UsageSummary } from "../../../../src/infra/provider-usage.types.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import { Icon } from "../../components/solid/icon.tsx";
@@ -7,7 +7,7 @@ import { registerSettingsEnglish } from "../../i18n/locales/en-settings.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import { createPageRequest } from "../../lib/page-request.ts";
 import { registerEnglishCatalog, t } from "../../lib/reactive/i18n.ts";
-import { listen } from "../../lib/reactive/listener.ts";
+import { createTimeout } from "../../lib/reactive/timers.ts";
 import { defineSolidBridge, type SolidBridgeElement } from "../../lib/solid-bridge.ts";
 
 registerEnglishCatalog(registerSettingsEnglish);
@@ -22,6 +22,10 @@ export type ModelAccountUsageElement = SolidBridgeElement<
   ModelAccountUsageProps,
   ModelAccountUsageMethods
 >;
+const owners = new WeakMap<
+  ModelAccountUsageElement,
+  { inputsChanged: () => void; refresh: () => void }
+>();
 
 declare global {
   interface HTMLElementTagNameMap {
@@ -36,6 +40,7 @@ type UsageState =
 
 function AccountUsage(props: ModelAccountUsageProps, host: ModelAccountUsageElement) {
   const [state, setState] = createSignal<UsageState>({ phase: "idle" });
+  let disposed = false;
   let isCurrent = () => false;
   const request = createPageRequest(() => {}, {
     task: (
@@ -58,8 +63,6 @@ function AccountUsage(props: ModelAccountUsageProps, host: ModelAccountUsageElem
       }
     },
   });
-  onCleanup(request.cancel);
-
   async function load(scope: ModelAccountUsageProps): Promise<void> {
     request.cancel();
     if (!scope.client || !scope.agentId || !scope.profileId) {
@@ -79,10 +82,25 @@ function AccountUsage(props: ModelAccountUsageProps, host: ModelAccountUsageElem
     agentId: props.agentId,
     profileId: props.profileId,
   });
-  const refresh = () => void load(scope());
-  // Fetch usage from the Gateway for the currently presented account.
-  createEffect(scope, (current) => void load(current));
-  onSettled(() => listen(host, "model-account-usage-refresh", refresh));
+  const deferredLoad = createTimeout(refresh, 0);
+  function refresh() {
+    deferredLoad.cancel();
+    if (!disposed) {
+      void load(scope());
+    }
+  }
+  const inputsChanged = () => {
+    // Revoke the old request at the native setter, before any deferred rendering or load.
+    request.cancel();
+    deferredLoad.schedule();
+  };
+  owners.set(host, { inputsChanged, refresh });
+  onCleanup(() => {
+    disposed = true;
+    owners.delete(host);
+    request.cancel();
+  });
+  onSettled(refresh);
   const summary = createMemo(() => {
     const current = state();
     return current.phase === "complete" ? current.summary : undefined;
@@ -145,10 +163,9 @@ defineSolidBridge<ModelAccountUsageProps, ModelAccountUsageMethods>(
       agentId: { default: "" },
       profileId: { default: "" },
     },
+    propertyChanged: (host) => owners.get(host)?.inputsChanged(),
     methods: {
-      refreshUsage: (host) => {
-        host.dispatchEvent(new Event("model-account-usage-refresh"));
-      },
+      refreshUsage: (host) => owners.get(host)?.refresh(),
     },
   },
 );

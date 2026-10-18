@@ -14,6 +14,7 @@ export type OverlayRegistry = {
   document: Document;
   members: Map<Overlay, RegisteredOverlay>;
   stack: Overlay[];
+  nativePopovers: Set<{ readonly open: boolean }>;
   nativeOrder: WeakMap<Overlay, number>;
   nextOrder: number;
   roots: Map<OverlayRoot, { references: number; release(): void }>;
@@ -47,6 +48,7 @@ export function registryFor(doc: Document): OverlayRegistry {
       document: doc,
       members: new Map(),
       stack: [],
+      nativePopovers: new Set(),
       nativeOrder: new WeakMap(),
       nextOrder: 0,
       roots: new Map(),
@@ -54,6 +56,20 @@ export function registryFor(doc: Document): OverlayRegistry {
     registries.set(doc, registry);
   }
   return registry;
+}
+
+/** Manual native surfaces retain their own dismissal policy; read their actual browser state. */
+export function registerNativePopover(surface: HTMLElement): () => void {
+  const registry = registryFor(surface.ownerDocument);
+  const entry = {
+    get open() {
+      return surface.isConnected && surface.matches(":popover-open");
+    },
+  };
+  registry.nativePopovers.add(entry);
+  return () => {
+    registry.nativePopovers.delete(entry);
+  };
 }
 
 /** Legacy callers can discover the same lifecycle tree from their actual anchor. */

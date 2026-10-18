@@ -1,13 +1,20 @@
 /* @vitest-environment jsdom */
 
+import { createComponent } from "solid-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ShellPresentation, ShellPresentationContext } from "../../app/app-shell-presentation.ts";
+import "../../components/menu-surface.ts";
+import "../../components/modal-dialog.ts";
 import { createOverlay, type Overlay } from "../../components/overlay-lifecycle.ts";
+import { mountSolid } from "../../test-helpers/mount-solid.ts";
+import { flush } from "../../test-helpers/solid-settle.ts";
 import {
   disposeSessionViews,
   renderSessionsView,
   buildMultiResult,
   buildProps,
 } from "./view.test-support.tsx";
+import { SessionsView } from "./view.tsx";
 
 afterEach(disposeSessionViews);
 
@@ -222,6 +229,119 @@ describe("Sessions query clearing", () => {
     },
   );
 
+  it("uses current shell drawer ownership before the drawer DOM commits", () => {
+    const shell = new ShellPresentation();
+    const onSearchChange = vi.fn();
+    vi.stubGlobal("matchMedia", () => Object.assign(new EventTarget(), { matches: true }));
+    const view = mountSolid(() =>
+      createComponent(ShellPresentationContext, {
+        value: shell,
+        get children() {
+          return createComponent(SessionsView, {
+            ...buildProps(buildMultiResult([])),
+            searchQuery: "keep me",
+            onSearchChange,
+          });
+        },
+      }),
+    );
+    try {
+      flush();
+      const trigger = view.container.querySelector<HTMLButtonElement>(
+        ".sessions-filter-popover__trigger",
+      )!;
+      const surface = view.container.querySelector<HTMLElement>(".sessions-filter-popover")!;
+      const input = view.container.querySelector<HTMLInputElement>(
+        ".sessions-filter-popover__search input",
+      )!;
+      const escape = () => {
+        if (!surface.matches(":popover-open")) {
+          trigger.click();
+        }
+        input.focus();
+        expect(document.activeElement).toBe(input);
+        input.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+        );
+      };
+      shell.navDrawerOpen = true;
+      escape();
+      expect(onSearchChange).not.toHaveBeenCalled();
+      shell.navDrawerOpen = false;
+      escape();
+      expect(onSearchChange).toHaveBeenCalledExactlyOnceWith("");
+    } finally {
+      view.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("leaves Escape to an open shadow-root menu and releases it on native hide, removal, and moves", () => {
+    const container = document.createElement("div");
+    const host = document.createElement("div");
+    document.body.append(container, host);
+    const root = host.attachShadow({ mode: "open" });
+    const menu = document.createElement("openclaw-menu-surface");
+    const otherDocument = document.implementation.createHTMLDocument("Moved menu");
+    const onSearchChange = vi.fn();
+    try {
+      renderSessionsView(
+        { ...buildProps(buildMultiResult([])), searchQuery: "keep me", onSearchChange },
+        container,
+      );
+      const trigger = container.querySelector<HTMLButtonElement>(
+        ".sessions-filter-popover__trigger",
+      )!;
+      const surface = container.querySelector<HTMLElement>(".sessions-filter-popover")!;
+      const input = container.querySelector<HTMLInputElement>(
+        ".sessions-filter-popover__search input",
+      )!;
+      const escape = () => {
+        if (!surface.matches(":popover-open")) {
+          trigger.click();
+        }
+        input.focus();
+        expect(document.activeElement).toBe(input);
+        input.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+        );
+      };
+      root.append(menu);
+      expect(menu.matches(":popover-open")).toBe(true);
+      escape();
+      expect(onSearchChange).not.toHaveBeenCalled();
+      expect(menu.matches(":popover-open")).toBe(true);
+
+      menu.hidePopover();
+      escape();
+      expect(onSearchChange).toHaveBeenCalledExactlyOnceWith("");
+      onSearchChange.mockClear();
+      menu.showPopover();
+      escape();
+      expect(onSearchChange).not.toHaveBeenCalled();
+
+      menu.remove();
+      escape();
+      expect(onSearchChange).toHaveBeenCalledExactlyOnceWith("");
+      onSearchChange.mockClear();
+      root.append(menu);
+      escape();
+      expect(onSearchChange).not.toHaveBeenCalled();
+
+      otherDocument.body.append(menu);
+      escape();
+      expect(onSearchChange).toHaveBeenCalledExactlyOnceWith("");
+      onSearchChange.mockClear();
+      root.append(menu);
+      escape();
+      expect(onSearchChange).not.toHaveBeenCalled();
+    } finally {
+      menu.remove();
+      host.remove();
+      container.remove();
+    }
+  });
+
   it.each([
     "composing",
     "IME keycode",
@@ -231,7 +351,7 @@ describe("Sessions query clearing", () => {
     "menu",
     "popover",
     "modal",
-  ])("leaves Escape to its existing owner when %s", (owner) => {
+  ])("leaves Escape to its existing owner when %s", async (owner) => {
     const container = document.createElement("div");
     document.body.append(container);
     const onSearchChange = vi.fn();
@@ -261,9 +381,14 @@ describe("Sessions query clearing", () => {
         expect(overlayOwner.request(true, "none")).toBe(true);
       }
       if (owner === "modal") {
-        overlay = document.createElement("dialog");
-        overlay.setAttribute("open", "");
-        document.body.append(overlay);
+        const modal = document.createElement("openclaw-modal-dialog");
+        modal.label = "Existing modal";
+        overlay = modal;
+        document.body.append(modal);
+        await modal.updateComplete;
+        expect(document.openClawModalLayers?.has(modal)).toBe(true);
+        input.focus();
+        expect(document.activeElement).toBe(input);
       }
       const event = new KeyboardEvent("keydown", {
         key: "Escape",

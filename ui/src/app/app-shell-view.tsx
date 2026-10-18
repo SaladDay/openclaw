@@ -26,6 +26,7 @@ import {
   type ShellElementAttributes,
   type ShellOwnedElements,
 } from "./app-shell-lazy-view.tsx";
+import { ShellPresentationContext } from "./app-shell-presentation.ts";
 import { readShellView, type ShellViewHost } from "./app-shell-view-state.ts";
 import {
   isOptionalElementDefined,
@@ -399,17 +400,19 @@ export function ApplicationShell(props: { host: ShellViewHost }): SolidJSX.Eleme
               },
             }}
           >
-            <RouterOutlet
-              ref={(element) => (props.host.routeOutlet = element)}
-              inert={view().reloadRequired}
-              aria-disabled={view().reloadRequired ? "true" : undefined}
-              router={view().runtime.router}
-              retryContext={view().context}
-              retryEnabled={view().gatewayConnected}
-              retentionScope={view().presentationScope}
-              onNotFound={props.host.recoverNotFoundRoute}
-              notFoundRecoveryReady={view().gatewayConnected}
-            />
+            <ShellPresentationContext value={props.host}>
+              <RouterOutlet
+                ref={(element) => (props.host.routeOutlet = element)}
+                inert={view().reloadRequired}
+                aria-disabled={view().reloadRequired ? "true" : undefined}
+                router={view().runtime.router}
+                retryContext={view().context}
+                retryEnabled={view().gatewayConnected}
+                retentionScope={view().presentationScope}
+                onNotFound={props.host.recoverNotFoundRoute}
+                notFoundRecoveryReady={view().gatewayConnected}
+              />
+            </ShellPresentationContext>
           </ShellLayoutProvider>
         </main>
         <span class="sr-only" role="status" aria-live="polite" aria-atomic="true">

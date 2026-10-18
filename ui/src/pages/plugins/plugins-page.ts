@@ -1,10 +1,12 @@
-import { createEffect, createSignal, onCleanup, onSettled } from "solid-js";
+import { createEffect, createSignal, onCleanup, onSettled, useContext } from "solid-js";
 import {
   pathForRoute,
   pluginCatalogIdFromPath,
   pluginSettingsIdFromPath,
 } from "../../app-route-paths.ts";
+import { ShellPresentationContext } from "../../app/app-shell-presentation.ts";
 import type { ApplicationContext } from "../../app/context.ts";
+import { isMobileNavLayout } from "../../app/mobile-nav-layout.ts";
 import { hasOperatorAdminAccess, hasOperatorReadAccess } from "../../app/operator-access.ts";
 import { showConfirmDialog } from "../../components/confirm-dialog.ts";
 import { registryFor } from "../../components/overlay-registry.ts";
@@ -51,6 +53,7 @@ export function createPluginsPage(options: {
   surface: () => "discovery" | "settings";
 }) {
   const context = options.context;
+  const shell = useContext(ShellPresentationContext);
   let active = true;
   const targets = createPluginPageTargets();
   let routeData: PluginsRouteData | undefined;
@@ -271,7 +274,7 @@ export function createPluginsPage(options: {
       !(event instanceof KeyboardEvent) ||
       event.key !== "Escape" ||
       isComposingKeyboardEvent(event) ||
-      document.querySelector(".shell-nav[aria-modal='true']") ||
+      (shell?.navDrawerOpen && isMobileNavLayout()) ||
       registryFor(document).stack.at(-1)?.open
     ) {
       return;
