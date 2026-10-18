@@ -18,7 +18,7 @@ import {
   expectTitle,
   storageKey,
   setupLinkReaderPanelTests,
-} from "./link-reader-panel-test-support.ts";
+} from "./link-reader-panel.test-support.ts";
 import { LINK_READER_PANEL_TOGGLE_EVENT } from "./panel-toggle-contract.ts";
 
 describe("Plugin link reader panel", () => {

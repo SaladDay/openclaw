@@ -9,7 +9,7 @@ import {
   open,
   expectTitle,
   setupLinkReaderPanelTests,
-} from "./link-reader-panel-test-support.ts";
+} from "./link-reader-panel.test-support.ts";
 
 describe("Plugin link reader panel images", () => {
   setupLinkReaderPanelTests();
