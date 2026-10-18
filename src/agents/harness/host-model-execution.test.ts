@@ -36,6 +36,8 @@ async function withHarness(
     finalize: () => Promise<unknown>;
     finalizeSettledTurn: ReturnType<typeof vi.fn<NonNullable<AgentHarness["finalizeSettledTurn"]>>>;
     runAttempt: ReturnType<typeof vi.fn<AgentHarness["runAttempt"]>>;
+    attempt: Parameters<typeof runAgentHarnessAttempt>[0];
+    native: PreparedNativeSessionRuntime | undefined;
     restrict: () => void;
     listeners: Set<() => void>;
     sourceHolds: () => number;
@@ -117,6 +119,8 @@ async function withHarness(
       finalize: () => runAgentHarnessSettledTurnFinalization(attempt, result, registration.harness),
       finalizeSettledTurn,
       runAttempt,
+      attempt,
+      native,
       restrict: () => {
         currentPolicy = policy;
         for (const listener of listeners) {
@@ -133,6 +137,20 @@ async function withHarness(
   expect(holds).toBe(0);
   expect(listeners.size).toBe(0);
 }
+
+it.each([true, false])("prepares web search for a known native model (%s)", async (known) => {
+  await withHarness("native", false, true, async ({ execute, runAttempt, attempt, native }) => {
+    if (!native || native.auth !== "native") {
+      throw new Error("Expected native model ownership");
+    }
+    native.modelRef = known ? { provider: "native", model: "bound" } : undefined;
+    attempt.config = { tools: { byProvider: { native: { deny: ["web_search"] } } } };
+    await execute();
+    expect(runAttempt.mock.calls[0]?.[0].preparedWebSearchPolicy).toEqual(
+      known ? { allowed: false, persistentAllowed: false } : undefined,
+    );
+  });
+});
 
 type HarnessOperation = "execution" | "finalization";
 type HarnessMode = Parameters<typeof withHarness>[0];

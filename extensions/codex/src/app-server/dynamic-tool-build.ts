@@ -362,33 +362,33 @@ export async function buildDynamicTools(
       !webSearchPresent &&
       persistentCodexWebSearchSurface
     ) {
-      const webSearchPolicy = (
-        await import("openclaw/plugin-sdk/agent-harness")
-      ).resolveWebSearchToolPolicy({
-        config: params.config,
-        modelProvider: params.model.provider,
-        modelId: params.modelId,
-        agentId: input.policyAgentId,
-        sessionKey: input.sandboxSessionKey,
-        sessionId: params.sessionId,
-        ...(persistentHostedWebSearchEligible
-          ? { runtimeToolAllowlist: toolRunContext.runtimeToolAllowlist }
-          : {}),
-        sandboxToolPolicy: input.sandbox?.tools,
-        messageProvider: messageToolProvider,
-        agentAccountId: params.agentAccountId,
-        groupId: params.groupId,
-        groupChannel: params.groupChannel,
-        groupSpace: params.groupSpace,
-        spawnedBy: params.spawnedBy,
-        senderId: params.senderId,
-        senderName: params.senderName,
-        senderUsername: params.senderUsername,
-        senderE164: params.senderE164,
-        inputProvenance: params.inputProvenance,
-        trustedInternalHandoff: params.trustedInternalHandoff,
-        scheduledToolPolicy: params.scheduledToolPolicy,
-      });
+      const webSearchPolicy =
+        params.preparedWebSearchPolicy ??
+        (await import("openclaw/plugin-sdk/agent-harness")).resolveWebSearchToolPolicy({
+          config: params.config,
+          modelProvider: params.model.provider,
+          modelId: params.modelId,
+          agentId: input.policyAgentId,
+          sessionKey: input.sandboxSessionKey,
+          sessionId: params.sessionId,
+          ...(persistentHostedWebSearchEligible
+            ? { runtimeToolAllowlist: toolRunContext.runtimeToolAllowlist }
+            : {}),
+          sandboxToolPolicy: input.sandbox?.tools,
+          messageProvider: messageToolProvider,
+          agentAccountId: params.agentAccountId,
+          groupId: params.groupId,
+          groupChannel: params.groupChannel,
+          groupSpace: params.groupSpace,
+          spawnedBy: params.spawnedBy,
+          senderId: params.senderId,
+          senderName: params.senderName,
+          senderUsername: params.senderUsername,
+          senderE164: params.senderE164,
+          inputProvenance: params.inputProvenance,
+          trustedInternalHandoff: params.trustedInternalHandoff,
+          scheduledToolPolicy: params.scheduledToolPolicy,
+        });
       persistentWebSearchAllowed =
         webSearchPolicy.persistentAllowed &&
         (persistentHostedWebSearchEligible ||
@@ -397,6 +397,10 @@ export async function buildDynamicTools(
       nativeWebSearchAllowed =
         webSearchPlan.kind === "native-hosted" &&
         webSearchPolicy.allowed &&
+        applyEmbeddedAttemptToolsAllow(
+          [{ name: "web_search" }],
+          toolRunContext.runtimeToolAllowlist,
+        ).length > 0 &&
         !isCodexMemoryFlushRun(params);
     }
     input.onPersistentWebSearchPolicyResolved?.(persistentWebSearchAllowed);

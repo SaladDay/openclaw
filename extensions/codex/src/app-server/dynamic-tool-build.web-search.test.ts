@@ -64,6 +64,7 @@ describe("Codex app-server dynamic tool search policy", () => {
     fetchAllowlist?: string[];
     nativeProviderWebSearchSupport?: "unsupported";
     skipsPolicyLookup?: boolean;
+    preparedWebSearchPolicy?: EmbeddedRunAttemptParams["preparedWebSearchPolicy"];
   }>([
     {
       name: "domain-restricted hosted search",
@@ -177,12 +178,32 @@ describe("Codex app-server dynamic tool search policy", () => {
       persistent: true,
       allowed: true,
     },
+    ...[undefined, ["message"]].map((toolsAllow) => ({
+      name: `prepared search allowance with runtime cap ${JSON.stringify(toolsAllow)}`,
+      preparedWebSearchPolicy: { allowed: true, persistentAllowed: true },
+      toolsAllow,
+      source: ["message"],
+      exposed: ["message"],
+      persistent: true,
+      allowed: toolsAllow === undefined,
+      skipsPolicyLookup: true,
+    })),
+    {
+      name: "prepared requester denial",
+      preparedWebSearchPolicy: { allowed: false, persistentAllowed: false },
+      source: ["message"],
+      exposed: ["message"],
+      persistent: false,
+      allowed: false,
+      skipsPolicyLookup: true,
+    },
   ])("projects search tools and persistent policy for $name", async (testCase) => {
     const workspaceDir = path.join(tempDir, "workspace");
     const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
     params.config = testCase.config;
     params.toolsAllow = testCase.toolsAllow;
     params.senderId = testCase.senderId;
+    params.preparedWebSearchPolicy = testCase.preparedWebSearchPolicy;
     let receivedOptions: ToolOptions | undefined;
     setCodexTestToolFactory(params, (options) => {
       receivedOptions = options;

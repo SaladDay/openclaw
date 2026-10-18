@@ -1,3 +1,4 @@
+import type { ProviderModelRef as ModelRef } from "@openclaw/model-catalog-core/model-catalog-refs";
 import type { AgentRuntimeRestrictionErrorDetails } from "../../../packages/gateway-protocol/src/agent-runtime-restriction-error-details.js";
 import { hasRememberedNativeRuntimeConsent } from "../../config/native-runtime-consent.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
@@ -33,6 +34,7 @@ import {
   readToolAllowlistIntersection,
   toolPolicyRestrictsTools,
 } from "../tool-policy.js";
+import { resolveWebSearchToolPolicy } from "../web-search-tool-policy.js";
 import { AgentHarnessPreflightError } from "./errors.js";
 import type { AgentHarness } from "./types.js";
 
@@ -341,6 +343,7 @@ type PluginHarnessToolPolicyContext = Pick<
   | "sessionKey"
   | "sandboxSessionKey"
   | "sandboxAgentId"
+  | "sandbox"
   | "agentId"
   | "provider"
   | "modelId"
@@ -366,6 +369,7 @@ type PluginHarnessToolPolicyContext = Pick<
   | "swarmCollector"
 > & {
   sessionId?: string;
+  modelProvider?: string;
   preparedSessionEntry?: Pick<SessionEntry, "sandbox" | "sandboxMode" | "createdActor"> | null;
   preparedSessionCapabilityEntry?: PreparedSessionCapabilityEntry;
 };
@@ -412,11 +416,34 @@ export async function preparePluginHarnessToolPolicies(
   params: PluginHarnessToolPolicyContext,
   safeDenyToolNames?: readonly string[],
   nativeToolNames?: readonly string[],
-): Promise<ResolvedPluginHarnessToolPolicies> {
+  webSearchModel?: ModelRef | null,
+): Promise<
+  ResolvedPluginHarnessToolPolicies & {
+    webSearchPolicy: ReturnType<typeof resolveWebSearchToolPolicy> | undefined;
+  }
+> {
   const consume = (sandbox: ReturnType<typeof resolveSandboxRuntimeStatus>) =>
-    withPreparedSessionCapabilityRead(() =>
-      resolvePluginHarnessToolPolicies(params, safeDenyToolNames, nativeToolNames, sandbox),
-    );
+    withPreparedSessionCapabilityRead(() => ({
+      ...resolvePluginHarnessToolPolicies(params, safeDenyToolNames, nativeToolNames, sandbox),
+      webSearchPolicy:
+        webSearchModel === null
+          ? undefined
+          : resolveWebSearchToolPolicy({
+              ...params,
+              modelProvider: webSearchModel?.provider ?? params.modelProvider ?? params.provider,
+              modelId: webSearchModel?.model ?? params.modelId,
+              agentId: params.sandboxAgentId ?? resolveSessionAgentId(params),
+              sessionKey:
+                params.sandboxSessionKey?.trim() || params.sessionKey?.trim() || params.sessionId,
+              messageProvider: params.messageChannel ?? params.messageProvider,
+              sandboxToolPolicy:
+                params.sandbox !== undefined
+                  ? params.sandbox?.tools
+                  : sandbox.sandboxed
+                    ? sandbox.toolPolicy
+                    : undefined,
+            }),
+    }));
   if (params.preparedSessionEntry !== undefined) {
     return consume(
       resolveSandboxRuntimeStatus({

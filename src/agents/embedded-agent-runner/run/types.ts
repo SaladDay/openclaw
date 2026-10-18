@@ -168,6 +168,8 @@ export type EmbeddedRunAttemptParams = EmbeddedRunAttemptBase & {
   operation?: EmbeddedRunAttemptOperation;
   /** Core-prepared fact that explicit requester/config policy restricts plugin-native tools. */
   pluginHarnessToolPolicyRestricted?: boolean;
+  /** Requester policy prepared by core; turn-specific tool restrictions still apply. */
+  preparedWebSearchPolicy?: { allowed: boolean; persistentAllowed: boolean };
   /** Host-prepared policy lifetime; turn-scoped policy can still allow every native tool. */
   pluginHarnessToolPolicyScope?: "conversation" | "turn";
   /** Audited exact denies that the plugin harness must enforce against native equivalents. */
