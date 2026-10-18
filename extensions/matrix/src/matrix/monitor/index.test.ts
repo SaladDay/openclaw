@@ -360,7 +360,9 @@ describe("monitorMatrixProvider", () => {
       expect.objectContaining({ mode: "stop" }),
     );
     expect(hoisted.client.drainPendingDecryptions).not.toHaveBeenCalled();
-    await hoisted.registeredOnRoomMessage?.("!room:example.org", { event_id: "$late" });
+    await expect(
+      registeredRoomMessageHandler()("!room:example.org", { event_id: "$late" }),
+    ).rejects.toThrow("Matrix monitor is stopped");
     expect(handler).not.toHaveBeenCalled();
   });
 
