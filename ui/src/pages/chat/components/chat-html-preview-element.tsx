@@ -26,11 +26,13 @@ import { defineSolidBridge, type SolidBridgeElement } from "../../../lib/solid-b
 import { WidgetSandboxHost, WIDGET_LOAD_TIMEOUT_MS } from "../../../lib/widget-sandbox-host.ts";
 import { prepareHtmlPreviewAssets } from "./chat-html-preview-assets.ts";
 import { prepareHtmlPreviewLinks } from "./chat-html-preview-links.ts";
+import { HtmlPreviewLoading } from "./chat-html-preview-view.tsx";
 import type { SessionFileSource } from "./chat-sidebar-content-types.ts";
 
 registerEnglishCatalog(registerFilePreviewEnglish);
 
 type HtmlPreviewProps = {
+  desktop: boolean;
   html: string;
   sourceIdentity: string;
   sessionFileSource?: SessionFileSource;
@@ -305,7 +307,7 @@ export const ChatHtmlPreview = defineSolidBridge<HtmlPreviewProps>(
           </div>
         </Show>
         <Show when={!rendered()}>
-          <div role="status">{t("common.loading")}</div>
+          <HtmlPreviewLoading desktop={props.desktop} />
         </Show>
         <Show when={view()} keyed>
           {(preview) => (
@@ -319,6 +321,7 @@ export const ChatHtmlPreview = defineSolidBridge<HtmlPreviewProps>(
   },
   {
     properties: {
+      desktop: { default: false, type: Boolean },
       html: { default: "", attribute: false },
       sourceIdentity: { default: "" },
       sessionFileSource: { default: undefined, attribute: false },
