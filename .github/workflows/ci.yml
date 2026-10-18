@@ -108,7 +108,7 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  IOS_SCREENSHOT_FASTLANE_VERSION: "2.240.1"
+  IOS_SCREENSHOT_FASTLANE_VERSION: "2.241.0"
   IOS_SCREENSHOT_NODE_VERSION: "24.16.0"
   IOS_SCREENSHOT_XCODE_VERSION: "Xcode 27.0 Build version 27A266a"
   NODE_VERSION: "24.21.0"
@@ -3422,7 +3422,7 @@ jobs:
         if: matrix.requires_go == true
         uses: actions/setup-go@90ad2b35f69faf97585ad74d28fa006d2739b7af # v7.0.0 + post-release fixes
         with:
-          go-version: "1.27.1"
+          go-version: "1.27.2"
           cache: false
 
       - name: Resolve docs i18n Go cache
@@ -3456,7 +3456,7 @@ jobs:
 
       - name: Verify docs i18n Go toolchain
         if: matrix.requires_go == true
-        run: test "$(go env GOVERSION)" = "go1.27.1"
+        run: test "$(go env GOVERSION)" = "go1.27.2"
 
       - name: Checkout trusted Node shard runner
         if: ${{ hashFiles('scripts/ci-run-node-test-shard.mts') == '' }}
@@ -5844,7 +5844,7 @@ jobs:
       - name: Setup Ruby
         uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
         with:
-          ruby-version: "3.4.11"
+          ruby-version: "4.0.7"
           bundler: "4.0.22"
           bundler-cache: false
           working-directory: apps/ios

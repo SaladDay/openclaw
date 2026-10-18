@@ -268,7 +268,7 @@ async function inspectSnapshotGraphs(
   configs: readonly { config: string }[],
   inspect: (query: GraphQuery) => Promise<CoreTsgoGraph[]>,
 ): Promise<CoreTsgoGraph[]> {
-  const { API } = await import("typescript/unstable/async");
+  const { API } = await import("typescript/async");
   const api = new API({ cwd });
   try {
     const snapshot = await api.createSnapshot({

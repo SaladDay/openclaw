@@ -6,8 +6,8 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import postcss, { type Rule } from "postcss";
-import selectorParser, { type ClassName, type Selector } from "postcss-selector-parser";
-import * as ts from "typescript/unstable/ast";
+import selectorParser from "postcss-selector-parser";
+import * as ts from "typescript/ast";
 import { groupBy } from "./lib/group-by.mts";
 import { createNativeTypeScriptParser } from "./lib/native-typescript.mts";
 import { getPropertyNameText, unwrapExpression } from "./lib/ts-guard-utils.mts";
@@ -425,15 +425,15 @@ function isExternallyProducedClass(className: string): boolean {
   );
 }
 
-function selectorClasses(selector: Selector): ClassName[] {
-  const classes: ClassName[] = [];
+function selectorClassNames(selector: selectorParser.Root): string[] {
+  const classes: string[] = [];
   selector.walkClasses((classNode) => {
-    classes.push(classNode);
+    classes.push(classNode.value);
   });
   return classes;
 }
 
-function selectorTargetsPart(selector: Selector): boolean {
+function selectorTargetsPart(selector: selectorParser.Root): boolean {
   let targetsPart = false;
   selector.walkPseudos((pseudo) => {
     if (pseudo.value === "::part") {
@@ -465,15 +465,15 @@ function auditStylesheet(
   const root = postcss.parse(css, { from: filePath });
   const findings: DeadClassFinding[] = [];
   root.walkRules((rule) => {
-    const parsed = selectorParser().astSync(rule.selector);
-    for (const selector of parsed.nodes) {
-      const classes = selectorClasses(selector);
+    for (const selectorText of rule.selectors) {
+      const selector = selectorParser().astSync(selectorText);
+      const classes = selectorClassNames(selector);
       // Element selectors (including html/body/:root) never become class
       // candidates. ::part selectors target component-owned shadow DOM.
       if (classes.length === 0 || selectorTargetsPart(selector)) {
         continue;
       }
-      const classNames = [...new Set(classes.map((classNode) => classNode.value))];
+      const classNames = [...new Set(classes)];
       const keptAlive = classNames.some(
         (className) => isExternallyProducedClass(className) || isReferenced(className, references),
       );
