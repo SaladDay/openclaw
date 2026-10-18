@@ -34,7 +34,7 @@ export function createMcpAppCatalog(
   let generation = 0;
   let identity = "";
   let preparedSessionIdentity = "";
-  let connected = true;
+  let targetRequest = new AbortController();
   const available = () => {
     const snapshot = gateway.read().snapshot;
     return (
@@ -56,6 +56,8 @@ export function createMcpAppCatalog(
   });
   // Synchronize the discovery RPC and its presentation cache with the current target.
   createEffect(discoveryIdentity, (value) => {
+    targetRequest.abort();
+    targetRequest = new AbortController();
     identity = value;
     generation++;
     setState(() => ({ servers: [], onboarding: [], error: null, loading: false }));
@@ -67,12 +69,12 @@ export function createMcpAppCatalog(
     }
   });
   onCleanup(() => {
-    connected = false;
-    generation++;
+    targetRequest.abort();
     unsubscribe();
   });
 
   async function refresh() {
+    const { signal } = targetRequest;
     const client = context.gateway.snapshot.client;
     const destination = target();
     if (
@@ -97,7 +99,7 @@ export function createMcpAppCatalog(
       draft.error = null;
     });
     const current = () =>
-      connected &&
+      !signal.aborted &&
       requestGeneration === generation &&
       client === context.gateway.snapshot.client &&
       scope === gatewayPresentationScope(context.gateway).key &&
@@ -112,6 +114,7 @@ export function createMcpAppCatalog(
         if (!described.session) {
           const session = await context.sessions.createResult(sessionTarget, {
             reconciliation: "background",
+            signal,
           });
           if (!current()) {
             return;
