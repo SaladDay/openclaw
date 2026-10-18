@@ -459,6 +459,7 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
         active: !catalogKey && this.active && this.presented,
         gateway: this.context.gateway,
       },
+      registerHumanMentionAccess: this.registerHumanMentionAccess,
       mentions: state.chatMentions,
       getMentions: () => state.chatMentions ?? [],
       mentionsUnsupported,
@@ -565,7 +566,7 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
 
       onOpenSessionDiff: sessionWorkspace.onOpenDiff,
       githubPublication: this.publication.binding?.view(),
-      onOpenWorkspaceFile: (target) => openSessionWorkspaceFile(state, target),
+      onOpenWorkspaceFile: (target) => void openSessionWorkspaceFile(state, target),
       onOpenSessionLink: (target) => navigateMarkdownSession(this.context, target),
       onNavigate: (routeId, options) => this.context.navigate(routeId, options),
       onRefresh: this.refreshHistory,
