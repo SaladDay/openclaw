@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  validateDecisionBatchV2,
   validateDecisionResultV2,
   type DecisionBatchV2,
   type DecisionProviderContextV2,
@@ -369,6 +370,27 @@ it.each<DecisionBatchV2>([
   expect(fetch).not.toHaveBeenCalled();
   expect(probe).not.toHaveBeenCalled();
 });
+it("rejects a valid Box question before image probing or HTTP", async () => {
+  const input: DecisionBatchV2 = {
+    state: {
+      type: "image",
+      dataUri:
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAK0lEQVR4nO3OIQEAAAwEoetfeovxBoGnq1tKQEBAQEBAQEBAQEBAQEBgHXhUDfhqRFDd3gAAAABJRU5ErkJggg==",
+    },
+    questions: { target: { type: "box", instructions: "the red square" } },
+  };
+  expect(validateDecisionBatchV2(input)).toBe(true);
+  const fetch = vi.fn();
+  vi.stubGlobal("fetch", fetch);
+  const { provider, context, probe } = fixture();
+  await expect(provider.evaluate(input, context)).resolves.toEqual({
+    status: "unavailable",
+    reason: "unsupported-input",
+  });
+  expect(probe).not.toHaveBeenCalled();
+  expect(fetch).not.toHaveBeenCalled();
+});
+
 it("uses the common image probe once and rejects invalid dimensions before HTTP", async () => {
   const input: DecisionBatchV2 = {
     ...batch,

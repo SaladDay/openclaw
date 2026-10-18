@@ -86,6 +86,8 @@ function question(id: string, q: DecisionQuestionV2): SageQuestion {
           description === null ? { id: tagId } : { id: tagId, name: render(description) },
         ),
       };
+    case "box":
+      break;
   }
   throw new Error("Unsupported Sage question");
 }

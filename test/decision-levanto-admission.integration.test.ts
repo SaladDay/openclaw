@@ -7,6 +7,7 @@ import { expect, it, vi } from "vitest";
 import levanto from "../extensions/levanto/index.js";
 import { removeAuthProfilesAcrossOwnerStores } from "../src/agents/auth-profiles/profiles.js";
 import { upsertAuthProfileWithLockOrThrow } from "../src/agents/auth-profiles/upsert-with-lock.js";
+import * as modelAuthProvider from "../src/agents/model-auth-provider.js";
 import { acquireAgentRunPreparedModelRuntime } from "../src/agents/prepared-model-runtime.js";
 import { resetPreparedModelRuntimeSnapshotsForTest } from "../src/agents/prepared-model-runtime.test-support.js";
 import {
@@ -18,7 +19,9 @@ import {
   evaluateDecisionV2InRegistry,
   prepareDecisionProviderReload,
 } from "../src/decisions/runtime.js";
+import type { DecisionBatchV2 } from "../src/decisions/types-v2.js";
 import { DecisionContractError } from "../src/decisions/validation.js";
+import { getImageMetadata } from "../src/media/media-services.js";
 import { withServer } from "../src/plugin-sdk/test-helpers/http-test-server.js";
 import { createPluginRuntimeMock } from "../src/plugin-sdk/test-helpers/plugin-runtime-mock.js";
 import { runPluginRegisterSyncInRegistry } from "../src/plugins/loader-module-runtime.js";
@@ -35,8 +38,8 @@ import { withEnvAsync } from "../src/test-utils/env.js";
 import { createOpenClawTestState } from "../src/test-utils/openclaw-test-state.js";
 import { VERSION } from "../src/version.js";
 
-it.each(["allowed", "revoked", "replaced"] as const)(
-  "checks the real Sage credential owner after DNS preparation (%s)",
+it.each(["allowed", "revoked", "replaced", "image-allowed", "box-unsupported"] as const)(
+  "checks the registered Sage capability and credential owner before final HTTP (%s)",
   async (change) => {
     const state = await createOpenClawTestState({ label: "sage-authority", applyEnv: false });
     const agentId = "decision-agent";
@@ -57,14 +60,16 @@ it.each(["allowed", "revoked", "replaced"] as const)(
       );
       await withServer(
         (request, response) => {
+          const incoming = {
+            url: request.url,
+            authorization: request.headers.authorization,
+            body: undefined as unknown,
+          };
+          received.push(incoming);
           const chunks: Buffer[] = [];
           request.on("data", (chunk: Buffer) => chunks.push(chunk));
           request.on("end", () => {
-            received.push({
-              url: request.url,
-              authorization: request.headers.authorization,
-              body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
-            });
+            incoming.body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
             response.setHeader("content-type", "application/json");
             response.end(
               JSON.stringify({
@@ -170,6 +175,14 @@ it.each(["allowed", "revoked", "replaced"] as const)(
                 const entered = createDeferredCore();
                 const release = createDeferredCore();
                 const controller = new AbortController();
+                const supported = change === "allowed" || change === "image-allowed";
+                const auth = vi.spyOn(modelAuthProvider, "resolveApiKeyForProviderCore");
+                const probe = vi
+                  .spyOn(api.runtime.media, "getImageMetadata")
+                  .mockImplementation(getImageMetadata);
+                const registered = builder.registry.decisionProviders[0]?.host.provider;
+                assert(registered?.contractVersion === 2);
+                const adapter = vi.spyOn(registered, "evaluate");
                 const originalFetch = ssrfRuntime.fetchWithSsrFGuard;
                 let finalAdmission: "unreached" | "allowed" | "rejected" = "unreached";
                 const forwarding = vi
@@ -199,11 +212,24 @@ it.each(["allowed", "revoked", "replaced"] as const)(
                       },
                     });
                   });
-                const pending = evaluateDecisionV2InRegistry(
-                  {
-                    state: { type: "text", text: "synthetic evidence" },
-                    questions: { q: { type: "boolean", instructions: "Needs review?" } },
+                const input: DecisionBatchV2 = {
+                  state:
+                    change === "image-allowed" || change === "box-unsupported"
+                      ? {
+                          type: "image",
+                          dataUri:
+                            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAK0lEQVR4nO3OIQEAAAwEoetfeovxBoGnq1tKQEBAQEBAQEBAQEBAQEBgHXhUDfhqRFDd3gAAAABJRU5ErkJggg==",
+                        }
+                      : { type: "text", text: "synthetic evidence" },
+                  questions: {
+                    q:
+                      change === "box-unsupported"
+                        ? { type: "box", instructions: "the red square" }
+                        : { type: "boolean", instructions: "Needs review?" },
                   },
+                };
+                const pending = evaluateDecisionV2InRegistry(
+                  input,
                   {
                     agentId,
                     purpose: "owner-proof",
@@ -219,6 +245,18 @@ it.each(["allowed", "revoked", "replaced"] as const)(
                   (error: unknown) => ({ error }),
                 );
                 try {
+                  if (change === "box-unsupported") {
+                    await expect(pending).resolves.toMatchObject({
+                      status: "unavailable",
+                      reason: "unsupported-input",
+                    });
+                    expect(auth).not.toHaveBeenCalled();
+                    expect(adapter).not.toHaveBeenCalled();
+                    expect(probe).not.toHaveBeenCalled();
+                    expect(forwarding).not.toHaveBeenCalled();
+                    expect(received).toHaveLength(0);
+                    return;
+                  }
                   await Promise.race([
                     entered.promise,
                     settled.then((outcome) => {
@@ -227,6 +265,9 @@ it.each(["allowed", "revoked", "replaced"] as const)(
                       );
                     }),
                   ]);
+                  expect(auth).toHaveBeenCalledOnce();
+                  expect(adapter).toHaveBeenCalledOnce();
+                  expect(probe).toHaveBeenCalledTimes(change === "image-allowed" ? 1 : 0);
                   expect(received).toHaveLength(0);
                   expect(prepared.snapshot.isCurrent()).toBe(true);
                   if (change === "revoked") {
@@ -249,12 +290,12 @@ it.each(["allowed", "revoked", "replaced"] as const)(
                       },
                     });
                   }
-                  expect(prepared.snapshot.isCurrent()).toBe(change === "allowed");
+                  expect(prepared.snapshot.isCurrent()).toBe(supported);
                   release.resolve();
                   const outcome = await settled;
-                  expect(finalAdmission).toBe(change === "allowed" ? "allowed" : "rejected");
-                  expect(received).toHaveLength(change === "allowed" ? 1 : 0);
-                  if (change === "allowed") {
+                  expect(finalAdmission).toBe(supported ? "allowed" : "rejected");
+                  expect(received).toHaveLength(supported ? 1 : 0);
+                  if (supported) {
                     expect(outcome).toMatchObject({
                       result: {
                         status: "ok",
@@ -285,6 +326,9 @@ it.each(["allowed", "revoked", "replaced"] as const)(
                   controller.abort();
                   await settled;
                   forwarding.mockRestore();
+                  adapter.mockRestore();
+                  probe.mockRestore();
+                  auth.mockRestore();
                 }
               } finally {
                 prepareDecisionProviderReload(builder.registry, new Set([record.id]));
