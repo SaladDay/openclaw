@@ -332,6 +332,7 @@ vi.mock("./direct.js", () => ({
   createDirectRoomTracker: hoisted.createDirectRoomTracker,
 }));
 
+// mock-isolation: Exercise monitor retirement with fixture-owned event listeners.
 vi.mock("./events.js", () => ({
   registerMatrixMonitorEvents: hoisted.registerMatrixMonitorEvents.mockImplementation(
     (params: {
@@ -349,6 +350,7 @@ vi.mock("./handler.js", () => ({
   createMatrixRoomMessageHandler: hoisted.createMatrixRoomMessageHandler,
 }));
 
+// mock-isolation: Lifecycle tests use in-memory ingress without opening SQLite.
 vi.mock("./ingress.js", () => ({
   createMatrixIngressMonitor: hoisted.createMatrixIngressMonitor,
 }));

@@ -789,15 +789,14 @@ describe("matrix doctor contract state migrations", () => {
       accountId?: string;
     }) => {
       const queue = openQueue<TPayload, TMetadata, TCompletedMetadata>(options);
-      return {
-        ...queue,
-        complete: async (...args) => {
-          if (++completed === 2) {
-            throw new Error("injected ingress write failure");
-          }
-          return queue.complete(...args);
-        },
+      const complete = queue.complete.bind(queue);
+      queue.complete = async (...args) => {
+        if (++completed === 2) {
+          throw new Error("injected ingress write failure");
+        }
+        return complete(...args);
       };
+      return queue;
     };
     const migration = migrationById("matrix-replay-guard-to-ingress");
     await expect(migration.migrateLegacyState(params)).rejects.toThrow(

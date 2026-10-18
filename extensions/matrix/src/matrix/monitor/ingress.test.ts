@@ -20,13 +20,13 @@ describe("Matrix sync admission", () => {
       event: MatrixRawEvent;
     }>({ channelId: "matrix", accountId: "default", stateDir: storage.root });
     const roomId = "!room:example.org";
-    const event: MatrixRawEvent = {
+    const event = {
       event_id: "$ciphertext",
       sender: "@alice:example.org",
       type: "m.room.encrypted",
       origin_server_ts: 1_000,
       content: { algorithm: "m.megolm.v1.aes-sha2", ciphertext: "encrypted-fixture" },
-    };
+    } satisfies MatrixRawEvent;
     const sync = matrixSyncResponse("cursor", roomId, event, "previous");
     const monitor = createMatrixIngressMonitor({
       accountId: "default",
@@ -79,13 +79,13 @@ describe("Matrix sync admission", () => {
       event: MatrixRawEvent;
     }>({ channelId: "matrix", accountId: "default", stateDir: storage.root });
     const roomId = "!encrypted:example.org";
-    const event: MatrixRawEvent = {
+    const event = {
       event_id: "$retry-decryption",
       sender: "@alice:example.org",
       type: "m.room.encrypted",
       origin_server_ts: now,
       content: { algorithm: "m.megolm.v1.aes-sha2", ciphertext: "encrypted-fixture" },
-    };
+    } satisfies MatrixRawEvent;
     const client = new MatrixClient("https://example.org", "synthetic-token");
     client.crypto = createMatrixCryptoFacade({
       client: { getCrypto: () => undefined, getUserId: () => null },
