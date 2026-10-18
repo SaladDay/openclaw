@@ -23,6 +23,7 @@ import { resolveScheduledToolCallerContext } from "../scheduled-tool-policy.js";
 import {
   withPreparedSessionCapabilityRead,
   type PreparedSessionCapabilityEntry,
+  type SessionCapabilitySnapshot,
 } from "../subagents/spawn/subagent-session-store.js";
 import { isKnownCoreToolId } from "../tool-catalog.js";
 import { resolveEffectiveToolFsWorkspaceOnly } from "../tool-fs-policy.js";
@@ -369,7 +370,6 @@ type PluginHarnessToolPolicyContext = Pick<
   | "swarmCollector"
 > & {
   sessionId?: string;
-  modelProvider?: string;
   preparedSessionEntry?: Pick<SessionEntry, "sandbox" | "sandboxMode" | "createdActor"> | null;
   preparedSessionCapabilityEntry?: PreparedSessionCapabilityEntry;
 };
@@ -377,6 +377,7 @@ type PluginHarnessToolPolicyContext = Pick<
 type PluginHarnessToolPolicy = { allow?: string[]; deny?: string[] };
 
 export type ResolvedPluginHarnessToolPolicies = {
+  webSearchPolicy?: EmbeddedRunAttemptParams["preparedWebSearchPolicy"];
   senderPolicy?: PluginHarnessToolPolicy;
   senderScopedGroupPolicy?: PluginHarnessToolPolicy;
   groupPolicy?: PluginHarnessToolPolicy;
@@ -416,22 +417,24 @@ export async function preparePluginHarnessToolPolicies(
   params: PluginHarnessToolPolicyContext,
   safeDenyToolNames?: readonly string[],
   nativeToolNames?: readonly string[],
-  webSearchModel?: ModelRef | null,
-): Promise<
-  ResolvedPluginHarnessToolPolicies & {
-    webSearchPolicy: ReturnType<typeof resolveWebSearchToolPolicy> | undefined;
-  }
-> {
-  const consume = (sandbox: ReturnType<typeof resolveSandboxRuntimeStatus>) =>
-    withPreparedSessionCapabilityRead(() => ({
-      ...resolvePluginHarnessToolPolicies(params, safeDenyToolNames, nativeToolNames, sandbox),
-      webSearchPolicy:
-        webSearchModel === null
-          ? undefined
-          : resolveWebSearchToolPolicy({
+  webSearchModel?: ModelRef,
+): Promise<ResolvedPluginHarnessToolPolicies> {
+  const consume = (sandbox: ReturnType<typeof resolveSandboxRuntimeStatus>) => {
+    const requesterFacts = new Map<string, SessionCapabilitySnapshot>();
+    return withPreparedSessionCapabilityRead(
+      () => {
+        requesterFacts.clear();
+        const policies = resolvePluginHarnessToolPolicies(
+          params,
+          safeDenyToolNames,
+          nativeToolNames,
+          sandbox,
+        );
+        const webSearchPolicy = webSearchModel
+          ? resolveWebSearchToolPolicy({
               ...params,
-              modelProvider: webSearchModel?.provider ?? params.modelProvider ?? params.provider,
-              modelId: webSearchModel?.model ?? params.modelId,
+              modelProvider: webSearchModel.provider,
+              modelId: webSearchModel.model,
               agentId: params.sandboxAgentId ?? resolveSessionAgentId(params),
               sessionKey:
                 params.sandboxSessionKey?.trim() || params.sessionKey?.trim() || params.sessionId,
@@ -442,8 +445,24 @@ export async function preparePluginHarnessToolPolicies(
                   : sandbox.sandboxed
                     ? sandbox.toolPolicy
                     : undefined,
-            }),
-    }));
+            })
+          : undefined;
+        return {
+          ...policies,
+          webSearchPolicy: webSearchPolicy && {
+            ...webSearchPolicy,
+            modelRef: webSearchModel,
+            requesterFacts: [...requesterFacts.values()],
+          },
+        };
+      },
+      {
+        onRead: webSearchModel
+          ? (snapshot) => requesterFacts.set(JSON.stringify(snapshot.query), snapshot)
+          : undefined,
+      },
+    );
+  };
   if (params.preparedSessionEntry !== undefined) {
     return consume(
       resolveSandboxRuntimeStatus({

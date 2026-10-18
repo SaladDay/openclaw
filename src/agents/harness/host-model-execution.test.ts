@@ -147,7 +147,14 @@ it.each([true, false])("prepares web search for a known native model (%s)", asyn
     attempt.config = { tools: { byProvider: { native: { deny: ["web_search"] } } } };
     await execute();
     expect(runAttempt.mock.calls[0]?.[0].preparedWebSearchPolicy).toEqual(
-      known ? { allowed: false, persistentAllowed: false } : undefined,
+      known
+        ? {
+            allowed: false,
+            persistentAllowed: false,
+            modelRef: { provider: "native", model: "bound" },
+            requesterFacts: [],
+          }
+        : undefined,
     );
   });
 });

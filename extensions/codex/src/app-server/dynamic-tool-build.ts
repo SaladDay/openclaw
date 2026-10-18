@@ -1,4 +1,5 @@
 import {
+  AgentHarnessPreflightError,
   applyEmbeddedAttemptToolsAllow,
   buildAgentHookContextChannelFields,
   buildEmbeddedAttemptToolRunContext,
@@ -362,8 +363,18 @@ export async function buildDynamicTools(
       !webSearchPresent &&
       persistentCodexWebSearchSurface
     ) {
+      const preparedPolicy = params.preparedWebSearchPolicy;
+      if (
+        preparedPolicy?.modelRef &&
+        (preparedPolicy.modelRef.provider !== params.model.provider ||
+          preparedPolicy.modelRef.model !== params.modelId)
+      ) {
+        throw new AgentHarnessPreflightError(
+          "Native model changed after web search policy preparation. Retry the turn to prepare policy for the current model.",
+        );
+      }
       const webSearchPolicy =
-        params.preparedWebSearchPolicy ??
+        preparedPolicy ??
         (await import("openclaw/plugin-sdk/agent-harness")).resolveWebSearchToolPolicy({
           config: params.config,
           modelProvider: params.model.provider,
