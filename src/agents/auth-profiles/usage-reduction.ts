@@ -126,7 +126,7 @@ export type AuthProfileFailureReduction = {
   expectedProfile: AuthProfileCredential;
   reason: AuthProfileFailureReason;
   modelId?: string;
-  whamResult: WhamCooldownProbeResult | null;
+  whamResult: (WhamCooldownProbeResult & { startedAt: number }) | null;
   probeEligible: boolean;
 };
 
@@ -154,12 +154,15 @@ export function reduceAuthProfileFailure(
   const currentWhamResult =
     whamResult &&
     input.probeEligible &&
+    // A slow usage response cannot replace newer success or failure evidence.
+    Math.max(previousStats?.lastProbeAt ?? 0, previousStats?.lastFailureAt ?? 0) <=
+      whamResult.startedAt &&
     profile.type === "oauth" &&
     isFutureDateTimestampMs(profile.expires, { nowMs: now }) &&
     isSameWhamCredential(expectedProfile, profile)
       ? whamResult
       : null;
-  // Quota observations are best effort; only the credential identity must still match.
+  // Ordinary failure bookkeeping still applies when the optional quota probe is stale.
   if (reason === "no_error_details" && !currentWhamResult) {
     return undefined;
   }

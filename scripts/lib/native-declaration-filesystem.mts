@@ -35,7 +35,7 @@ export function createDeclarationFileSystem(
   };
   inputs: Set<string>;
   getLookups(): DeclarationLookup[];
-  assertValid(): void;
+  assertValid(this: void): void;
 } {
   const boundary = admit ? createDeclarationInputBoundary(cwd) : undefined;
   const resolve = (file: string) => boundary?.resolve(file) ?? path.resolve(cwd, file);

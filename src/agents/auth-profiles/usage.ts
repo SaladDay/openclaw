@@ -587,7 +587,10 @@ export async function markAuthProfileFailure(params: {
         reduction: import("./usage-reduction.js").PersonalAuthProfileUsageReduction,
       ) => Promise<PersonalAuthProfileUsageResult | null | undefined>,
     ) => {
-      const whamResult = shouldProbeWham ? await probeWhamForCooldown(profile, profileId) : null;
+      const startedAt = Date.now();
+      const whamResult = shouldProbeWham
+        ? { ...(await probeWhamForCooldown(profile, profileId)), startedAt }
+        : null;
       return persist({
         kind: "failure",
         expectedProfile: profile,
