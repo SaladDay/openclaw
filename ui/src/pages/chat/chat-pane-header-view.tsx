@@ -5,6 +5,7 @@ import { t } from "../../lib/reactive/i18n.ts";
 import type { ElementProperties } from "../../types/solid-elements.d.ts";
 import { usePanePresentation } from "./chat-pane-presentation.ts";
 import type { ChatDetails } from "./components/chat-details.tsx";
+import "./chat-pane-header-presence.css";
 
 export type PaneDetailsProps = {
   chat: ChatDetails["props"];
@@ -51,9 +52,9 @@ export function PaneSubagentStop(props: { onAbort: () => void }) {
 export function PaneHeaderPresence(props: PresenceProps) {
   return (
     <openclaw-viewer-facepile
-      class="chat-pane__presence"
+      class="chat-pane__presence chat-pane__presence--desktop"
       prop:staticUsers={props.staticUsers}
-      prop:maxVisible={4}
+      prop:maxVisible={3}
       prop:personActivity={props.personActivity}
       variant="session"
     />
