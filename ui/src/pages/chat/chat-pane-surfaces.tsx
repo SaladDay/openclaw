@@ -1,9 +1,10 @@
-import { Show } from "solid-js";
+import { Show, type Element } from "solid-js";
 import "../../components/modal-dialog.ts";
 import { t } from "../../lib/reactive/i18n.ts";
 import { BoardSessionSurface, type BoardSessionSurfaceProps } from "./board-session-surface.tsx";
 
 export function ChatBoardPanel(props: {
+  controls?: Element;
   error: string | undefined;
   elementReady: boolean;
   surface: BoardSessionSurfaceProps;
@@ -18,6 +19,7 @@ export function ChatBoardPanel(props: {
       }
     >
       <BoardSessionSurface
+        controls={props.controls}
         active={props.surface.active}
         session={props.surface.session}
         snapshot={props.surface.snapshot}

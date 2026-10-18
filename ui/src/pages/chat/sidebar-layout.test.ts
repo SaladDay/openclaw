@@ -28,24 +28,47 @@ function openAll(): SidebarLayout {
 }
 
 describe("sidebar layout", () => {
-  it.each(["right"] as const)(
-    "restores the original %s split after focusing the side in place",
-    (dock) => {
+  it.each(["dashboard", undefined])(
+    "restores the original split after focusing the side with panelId=%s",
+    (panelId) => {
       const split = normalizeSidebarLayout(
-        ensureSidebarConversation(setSidebarDock(activatePanel(openAll(), "dashboard"), dock)),
+        ensureSidebarConversation(activatePanel(openAll(), "dashboard")),
       );
-      const focused = toggleSidebarPanelExpanded(split, "dashboard");
+      const focused = toggleSidebarPanelExpanded(split, panelId);
       expect(sidebarMainPanel(focused)).toEqual(sidebarMainPanel(split));
       expect(focused.columns).toEqual(split.columns);
       expect(isSidebarSlotVisible(focused, "dashboard")).toBe(true);
       expect(isSidebarSlotVisible(focused, "conversation")).toBe(false);
-      expect(toggleSidebarPanelExpanded(normalizeSidebarLayout(focused), "dashboard")).toEqual(
-        split,
-      );
+      expect(toggleSidebarPanelExpanded(normalizeSidebarLayout(focused), panelId)).toEqual(split);
       const closed = setSidebarOpen(focused, false);
       expect(isSidebarSlotVisible(closed, "conversation")).toBe(true);
       expect(isSidebarSlotVisible(closed, "dashboard")).toBe(false);
       expect(setSidebarOpen(closed, true)).toEqual(split);
+    },
+  );
+
+  it.each(["left", "right", "bottom"] as const)(
+    "expands and restores an empty %s container without adding a tool or losing geometry",
+    (dock) => {
+      const opened = setSidebarOpen({ columns: [] }, true);
+      const columnId = opened.columns[0]!.id;
+      const sized = resizeSidebarPanel(
+        setSidebarDock(resizeSidebarPanel(opened, columnId, 620), "bottom"),
+        columnId,
+        410,
+      );
+      const split = normalizeSidebarLayout(ensureSidebarConversation(setSidebarDock(sized, dock)));
+      const before = structuredClone(split);
+      const focused = toggleSidebarPanelExpanded(split);
+      expect(focused).toMatchObject({ open: true, expanded: true, expandedSide: true, dock });
+      expect(sidebarSidePanels(focused)).toEqual([]);
+      expect(sidebarActivePanel(focused)).toBeUndefined();
+      expect(sidebarMainPanel(focused)).toEqual({ id: "conversation", slot: "conversation" });
+      expect(focused.columns).toEqual(before.columns);
+      expect(split).toEqual(before);
+      const restored = toggleSidebarPanelExpanded(normalizeSidebarLayout(focused));
+      expect(restored).toEqual(before);
+      expect(isSidebarSlotVisible(restored, "conversation")).toBe(true);
     },
   );
 
@@ -73,6 +96,23 @@ describe("sidebar layout", () => {
     });
     expect(isSidebarSlotVisible(layout, "conversation")).toBe(true);
     expect(layout.expandedSide).toBeUndefined();
+  });
+
+  it("retains stored expansion of an empty container and restores the chat", () => {
+    const layout = normalizeSidebarLayout({
+      columns: [{ id: "side", side: "right", panels: [], width: 620, height: 410 }],
+      expanded: true,
+      expandedSide: true,
+      open: true,
+    });
+    expect(layout.expandedSide).toBe(true);
+    expect(sidebarSidePanels(layout)).toEqual([]);
+    expect(isSidebarSlotVisible(layout, "conversation")).toBe(false);
+    expect(normalizeSidebarLayout(layout)).toEqual(layout);
+    const restored = setSidebarExpanded(layout, false);
+    expect(isSidebarSlotVisible(restored, "conversation")).toBe(true);
+    expect(restored.columns[0]).toMatchObject({ width: 620, height: 410 });
+    expect(normalizeSidebarLayout({ ...layout, open: false }).expandedSide).toBeUndefined();
   });
 
   it("shows a narrow pane's open background panel in place of the main view, and nothing else", () => {
