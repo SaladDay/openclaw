@@ -21,7 +21,7 @@ import { ChatCiAutomationView, type ChatCiAutomationProps } from "./chat-ci-auto
 import { createCiDisclosure, type ChatCiDisclosureProps } from "./chat-ci-disclosure.ts";
 
 /** Cron owns durable settings and execution; this element retains only the visible projection. */
-type Props = ChatCiDisclosureProps & { sessionId: string };
+type Props = ChatCiDisclosureProps & { sessionId: string; menuPresentation?: boolean };
 
 type AutomationState = {
   jobs: CiAutomationJobs;
@@ -371,7 +371,7 @@ export type ChatCiAutomationElement = SolidBridgeElement<Props>;
 
 function ChatCiAutomationContent(props: Props, host: SolidBridgeElement<Props>) {
   const read = createCiAutomation(props, host);
-  return <ChatCiAutomationView {...read()} />;
+  return <ChatCiAutomationView {...read()} menuPresentation={props.menuPresentation} />;
 }
 
 defineSolidBridge<Props>("openclaw-chat-ci-automation", ChatCiAutomationContent, {
@@ -381,5 +381,7 @@ defineSolidBridge<Props>("openclaw-chat-ci-automation", ChatCiAutomationContent,
     sessionKey: { default: "", attribute: false },
     sessionId: { default: "", attribute: false },
     presented: { default: true, type: Boolean },
+    inline: { default: false, attribute: false },
+    menuPresentation: { default: false, attribute: false },
   },
 });

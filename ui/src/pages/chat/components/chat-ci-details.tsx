@@ -302,11 +302,13 @@ function createCiDetails(
   };
 }
 
-export type ChatCiDetailsElement = SolidBridgeElement<ChatCiDisclosureProps>;
-function ChatCiDetailsContent(
-  props: ChatCiDisclosureProps,
-  host: SolidBridgeElement<ChatCiDisclosureProps>,
-) {
+type ChatCiDetailsProps = ChatCiDisclosureProps & {
+  /** Opt summaries into the containing Menu's native control navigation. */
+  menuControls?: boolean;
+};
+
+export type ChatCiDetailsElement = SolidBridgeElement<ChatCiDetailsProps>;
+function ChatCiDetailsContent(props: ChatCiDetailsProps, host: ChatCiDetailsElement) {
   const model = createCiDetails(props, host);
   const state = model.state;
   const retryWait = () => Math.max(0, state.retryAt - Date.now());
@@ -343,7 +345,10 @@ function ChatCiDetailsContent(
           model.setExpanded(check().id, event.currentTarget.open);
         }}
       >
-        <summary class="chat-ci__job-summary">
+        <summary
+          class="chat-ci__job-summary"
+          data-form-control={props.menuControls ? "" : undefined}
+        >
           <CheckStatus state={jobState()} />
           <span class="chat-ci__name">{check().name}</span>
           <span class="chat-ci__duration">{duration(check(), jobState() === "running")}</span>
@@ -447,7 +452,7 @@ function ChatCiDetailsContent(
         </For>
         <Show when={skipped().length}>
           <details class="chat-ci__skipped">
-            <summary>
+            <summary data-form-control={props.menuControls ? "" : undefined}>
               <CheckStatus state="skipped" />
               <span>
                 {t("chat.pullRequests.checksSkippedCount", { count: String(skipped().length) })}
@@ -476,11 +481,13 @@ function ChatCiDetailsContent(
   );
 }
 
-defineSolidBridge<ChatCiDisclosureProps>("openclaw-chat-ci-details", ChatCiDetailsContent, {
+defineSolidBridge<ChatCiDetailsProps>("openclaw-chat-ci-details", ChatCiDetailsContent, {
   properties: {
     gateway: { default: undefined, attribute: false },
     pullRequest: { default: undefined, attribute: false },
     sessionKey: { default: "", attribute: false },
     presented: { default: true, type: Boolean },
+    inline: { default: false, attribute: false },
+    menuControls: { default: false, attribute: false },
   },
 });
