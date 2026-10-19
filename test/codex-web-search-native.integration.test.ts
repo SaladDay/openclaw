@@ -3,7 +3,7 @@ import { Worker } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { patchSessionEntry, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { beforeEach, expect, it, vi } from "vitest";
-import * as fixture from "../extensions/codex/native-web-search.test-api.js";
+import { loadCodexNativeWebSearchTestFixture } from "../extensions/codex/test-api.js";
 import {
   disposeAllSessionMcpRuntimes,
   setSessionMcpRuntimeScheduler,
@@ -23,10 +23,13 @@ import { getTrackedWorkerPoolSnapshot } from "../src/infra/worker-cpu.js";
 import { withPluginRuntimeGatewayContextResolver } from "../src/plugins/runtime/gateway-request-scope.js";
 import { beginAgentDeletionJournal } from "../src/test-utils/agent-deletion-journal.js";
 import { createTestGatewayScheduler } from "../src/test-utils/gateway-scheduler-clock.js";
+import type { CodexAttemptRuntime } from "./types/vitest-codex-attempt-runtime.js";
+
+const fixture = await loadCodexNativeWebSearchTestFixture();
 
 beforeEach((context) => {
   let scheduler: ReturnType<typeof createTestGatewayScheduler> | undefined;
-  const runtime: fixture.CodexAttemptRuntime = {
+  const runtime: CodexAttemptRuntime = {
     readWorkerPools: getTrackedWorkerPoolSnapshot,
     async start() {
       scheduler = createTestGatewayScheduler();
@@ -123,7 +126,7 @@ it.each([
         ),
         appServerRuntimeFingerprint:
           fixture.buildCodexSupervisionTestConnectionFingerprint(pluginConfig),
-      };
+      } satisfies Parameters<typeof fixture.writeCodexAppServerBinding>[1];
       await fixture.writeNativeCatalogFixture(binding.rolloutPath, binding.threadId, []);
       await fixture.writeCodexAppServerBinding(params.sessionFile, binding);
       let preparationReply = false;
