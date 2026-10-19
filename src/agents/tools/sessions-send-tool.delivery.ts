@@ -44,6 +44,7 @@ import {
   hasInProcessGatewayToolContext,
   type AgentToolGatewayRequestCaller,
 } from "./in-process-gateway.js";
+import type { SessionSendReplyAdmission } from "./sessions-send-communication.js";
 import { queueSessionsSendSteeringWithCustody } from "./sessions-send-tool.steering.js";
 
 // Bind at dispatch: child followup custody installs its context after tool construction.
@@ -135,6 +136,7 @@ type SessionsSendDeliveryParams = {
   /** Communication binds an incarnation without claiming result ownership or forbidding Cron fallback. */
   preparedTargetSessionId?: string;
   retainAcceptance?: boolean;
+  captureReplyAdmission?: (runId: string) => SessionSendReplyAdmission;
   assertDispatchCurrent?: () => void;
   // Destination policy fences input commit, not an already accepted acknowledgment.
   assertSendCurrent?: () => void;
@@ -142,6 +144,7 @@ type SessionsSendDeliveryParams = {
   /** A Cron fallback is another exact recipient and needs its own admission. */
   prepareFallback?: (sessionKey: string) => Promise<{
     targetSession?: AgentStepSession;
+    captureReplyAdmission?: (runId: string) => SessionSendReplyAdmission;
     callGateway: AgentToolGatewayRequestCaller;
     assertCurrent: () => void;
     close: () => void;
@@ -157,6 +160,7 @@ export type SessionsSendStart =
       steeredRunId?: string;
       a2aSessionKey?: string;
       a2aSession?: AgentStepSession;
+      replyAdmission?: SessionSendReplyAdmission;
     }
   | { ok: false; result: ReturnType<typeof jsonResult<Record<string, unknown>>> };
 
@@ -425,6 +429,9 @@ export async function startSessionsSendAgentRun(
       ok: true,
       runId: responseRunId,
       targetDisposition: "queued",
+      replyAdmission: params.retainAcceptance
+        ? undefined
+        : (fallback?.captureReplyAdmission ?? params.captureReplyAdmission)?.(responseRunId),
       ...(fallbackSessionKey
         ? { a2aSessionKey: fallbackSessionKey, a2aSession: fallback?.targetSession }
         : {}),

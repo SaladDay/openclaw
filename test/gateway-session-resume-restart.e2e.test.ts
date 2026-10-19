@@ -699,10 +699,10 @@ it.skipIf(process.platform === "win32").for(["managed", "SIGTERM", "SIGKILL"] as
   },
 );
 
-it.skipIf(process.platform === "win32")(
-  "automatically resumes an authenticated peer follow-up after process death",
+it.skipIf(process.platform === "win32").for(["continue", "revoked"] as const)(
+  "automatically resumes an authenticated peer follow-up after process death: %s",
   { timeout: 180_000 },
-  async (context) => {
+  async (name, context) => {
     const { signal } = context;
     let checkpoint = "creating the isolated fixture";
     let readLogs = () => "Gateway instance not created";
@@ -721,7 +721,7 @@ it.skipIf(process.platform === "win32")(
         async () => {
           await instance.startGateway();
           client = await connectInstance(instance, signal, true);
-          for (const key of [sourceKey("continue"), targetKey("continue")]) {
+          for (const key of [sourceKey(name), targetKey(name)]) {
             await client.request("sessions.create", {
               key,
               agentId: "main",
@@ -732,14 +732,14 @@ it.skipIf(process.platform === "win32")(
           const source = await client.request<{ runId: string }>(
             "chat.send",
             {
-              sessionKey: sourceKey("continue"),
-              message: sourceRequest("continue"),
+              sessionKey: sourceKey(name),
+              message: sourceRequest(name),
               idempotencyKey: "automatic-peer-source",
             },
             { expectFinal: false },
           );
           await Promise.all([
-            race(provider.suspended("continue")),
+            race(provider.suspended(name)),
             client
               .request("agent.wait", { runId: source.runId, timeoutMs: 30_000 })
               .then((result) => expect(result).toMatchObject({ status: "ok" })),
@@ -747,11 +747,9 @@ it.skipIf(process.platform === "win32")(
           const before = await client.request<SessionsListResult>("sessions.list", {
             agentId: "main",
           });
-          const sessionId = before.sessions.find(
-            (row) => row.key === targetKey("continue"),
-          )?.sessionId;
+          const sessionId = before.sessions.find((row) => row.key === targetKey(name))?.sessionId;
           expect(sessionId).toEqual(expect.any(String));
-          provider.adopted("continue");
+          provider.adopted(name);
           await client.stopAndWait();
           client = undefined;
           checkpoint = "restarting the isolated Gateway";
@@ -767,18 +765,24 @@ it.skipIf(process.platform === "win32")(
           client = await connectInstance(instance, signal, true);
           // No sessions.recover or fresh chat.send: the durable input owns this continuation.
           checkpoint = "waiting for automatic recovery";
-          await race(provider.resumed);
+          if (name === "revoked") {
+            await race(provider.revocationReady);
+            await applyReadOnly(client, instance, targetKey(name));
+            provider.releaseRevoked();
+          } else {
+            await race(provider.resumed);
+          }
           await race(
             vi.waitFor(
               async () => {
                 const history = await client!.request("chat.history", {
-                  sessionKey: targetKey("continue"),
+                  sessionKey: targetKey(name),
                 });
-                expect(JSON.stringify(history)).toContain(final("continue"));
+                expect(JSON.stringify(history)).toContain(final(name));
                 const rows = await client!.request<SessionsListResult>("sessions.list", {
                   agentId: "main",
                 });
-                const recovered = rows.sessions.find((row) => row.key === targetKey("continue"));
+                const recovered = rows.sessions.find((row) => row.key === targetKey(name));
                 expect(recovered).toMatchObject({ sessionId, status: "done", hasActiveRun: false });
                 expect(recovered?.restartRecoveryStatus).toBeUndefined();
               },
@@ -786,11 +790,17 @@ it.skipIf(process.platform === "win32")(
             ),
           );
           expect(
-            await readFile(path.join(instance.state.workspaceDir, "effect-continue"), "utf8"),
+            await readFile(path.join(instance.state.workspaceDir, `effect-${name}`), "utf8"),
           ).toBe("completed\n");
-          expect(
-            await readFile(path.join(instance.state.workspaceDir, "operator-effect"), "utf8"),
-          ).toBe("resumed\n");
+          if (name === "revoked") {
+            await expect(
+              readFile(path.join(instance.state.workspaceDir, "revoked-effect")),
+            ).rejects.toMatchObject({ code: "ENOENT" });
+          } else {
+            expect(
+              await readFile(path.join(instance.state.workspaceDir, "operator-effect"), "utf8"),
+            ).toBe("resumed\n");
+          }
           expect(provider.resumeInputs).toHaveLength(2);
         },
         async () => client?.stopAndWait(),
@@ -833,6 +843,16 @@ it.skipIf(process.platform === "win32").for(["restart", "stop"] as const)(
         for (const key of [sourceKey("continue"), targetKey("continue")]) {
           await client.request("sessions.create", { key, agentId: "main", permissionMode: "full" });
         }
+        // The original request is allowed, but neither endpoint permits a new
+        // reverse-direction send. Its requested result must still be admitted.
+        await client.request("sessions.patch", {
+          key: sourceKey("continue"),
+          communication: { receive: "never" },
+        });
+        await client.request("sessions.patch", {
+          key: targetKey("continue"),
+          communication: { send: "never" },
+        });
         await client.request(
           "chat.send",
           {

@@ -488,6 +488,7 @@ it.each(["interrupted", "cancelled"] as const)(
       message: { ...input.message, __openclaw: { sessionSendDelivery: returnedDelivery } },
     };
     io.pending.mockResolvedValue({ items: [returnedInput], total: 1 });
+    sourceEntry.communication = { send: "never" };
     io.source.mockResolvedValue(sourceSnapshot(returnedInput, state));
     dispatch.mockImplementation(async (_request, _timeout, options) => {
       options.assertAdmissionCurrent();

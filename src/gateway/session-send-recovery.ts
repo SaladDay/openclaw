@@ -289,6 +289,14 @@ async function recoverSessionSendDeliveriesForAgents(
                 inputProvenance: input.message.provenance,
                 access: { sandboxed: delivery.sandboxed },
                 allowApproval: false,
+                // The pending-input owner, not serialized provenance alone,
+                // proves this result was already accepted for this exact row.
+                acceptedReply: delivery.returnedResult
+                  ? () => {
+                      assertCurrent();
+                      retained.assertCurrent();
+                    }
+                  : undefined,
                 assertSourceCurrent: assertCurrent,
                 callGateway,
                 signal,

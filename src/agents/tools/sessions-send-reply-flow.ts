@@ -357,6 +357,7 @@ export async function finishSessionsSendReply(params: {
       skip: registryCompletion || delayedDelivery.status === "skipped",
       targetSessionKey: acceptedTargetSessionKey,
       targetSession: start.a2aSession ?? replyContext.targetSession,
+      replyAdmission: start.replyAdmission,
       displayKey: start.a2aSessionKey ?? replyContext.displayKey,
       notifyRequesterOnWaitFailure: notifyRequesterOnWaitFailure && !isIsolatedCronRequester,
     });

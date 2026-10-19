@@ -18,6 +18,7 @@ import {
 import {
   prepareSessionsSendCommunication,
   readSessionCommunicationEndpoint,
+  type SessionSendReplyAdmission,
 } from "./sessions-send-communication.js";
 
 export type AgentStepSession = {
@@ -39,6 +40,7 @@ export async function runAgentStep(params: {
   deliveryContext?: DeliveryContext;
   expectedSession?: AgentStepSession;
   expectedSourceSession?: AgentStepSession;
+  replyAdmission?: SessionSendReplyAdmission;
 }): Promise<void> {
   const promptedAt = Date.now();
   const stepIdem = crypto.randomUUID();
@@ -59,7 +61,8 @@ export async function runAgentStep(params: {
       !sourceAgentId ||
       !sourceSessionKey ||
       !expectedSession ||
-      !expectedSourceSession
+      !expectedSourceSession ||
+      !params.replyAdmission
     ) {
       throw new Error("Returned peer result requires its original source and target sessions.");
     }
@@ -105,6 +108,7 @@ export async function runAgentStep(params: {
       dispatchMessage: message,
       inputProvenance,
       allowApproval: false,
+      acceptedReply: params.replyAdmission,
       assertSourceCurrent,
       signal: operatorSource?.signal,
       callGateway: gatewayCall,

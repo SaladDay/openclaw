@@ -73,6 +73,7 @@ export async function runSessionsSendA2AFlow(params: {
   targetSessionKey: string;
   targetAgentId: string;
   targetSession?: AgentStepSession;
+  replyAdmission?: Parameters<typeof runAgentStep>[0]["replyAdmission"];
   displayKey: string;
   runId: string;
   replyTimeoutMs: number;
@@ -96,6 +97,7 @@ export async function runSessionsSendA2AFlow(params: {
     deliveryContext: params.requesterOrigin,
     expectedSession: params.requesterSession,
     expectedSourceSession: params.targetSession,
+    replyAdmission: params.replyAdmission,
     timeoutMs: params.replyTimeoutMs,
     sourceSessionKey: params.targetSessionKey,
     ...(child ? {} : { sourceAgentId: params.targetAgentId }),
