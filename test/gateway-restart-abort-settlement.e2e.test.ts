@@ -405,7 +405,9 @@ it(
           ).toBe(true);
           expect(child.kill("SIGTERM")).toBe(true);
           expect(await gate(closed), instance.logs()).toEqual([0, null]);
-          expect(instance.logs()).toContain("shutdown completed cleanly");
+          expect(instance.logs()).toMatch(
+            /completed in \d+ms with warnings: restart-reply-drain\b/u,
+          );
           expect(instance.logs()).not.toContain("shutdown deadline reached");
           for (const pid of [childPids.pid, childPids.gitPid]) {
             expect(() => process.kill(pid, 0)).toThrow();
