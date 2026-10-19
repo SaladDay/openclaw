@@ -1,4 +1,3 @@
-// Verifies exec host, sandbox, and approval-default resolution for embedded agents.
 import path from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
@@ -213,25 +212,23 @@ describe("resolveExecDefaults", () => {
   });
 
   it.each([
-    {
-      override: { mode: "full", security: "allowlist" },
-      security: "deny",
-      ask: "always",
-      mode: "deny",
-    },
-    { override: { mode: "full", ask: "on-miss" }, security: "full", ask: "on-miss", mode: "full" },
-  ] as const)(
-    "bounds tightened full sessions with host floors for $override",
-    ({ override, ...expected }) => {
-      expect(
-        resolve({
-          sessionEntry: { permissionMode: "full" },
-          execOverrides: override,
-          execApprovals: { version: 1, defaults: { security: "deny", ask: "always" } },
-        }),
-      ).toMatchObject(expected);
-    },
-  );
+    [
+      { mode: "full", security: "allowlist" },
+      { security: "deny", ask: "always", mode: "deny" },
+    ],
+    [
+      { mode: "full", ask: "on-miss" },
+      { security: "full", ask: "on-miss", mode: "full" },
+    ],
+  ] as const)("bounds full sessions with host floors for %j", (execOverrides, expected) => {
+    expect(
+      resolve({
+        sessionEntry: { permissionMode: "full" },
+        execOverrides,
+        execApprovals: { version: 1, defaults: { security: "deny", ask: "always" } },
+      }),
+    ).toMatchObject(expected);
+  });
 
   it("uses the explicit agent owner for an unscoped session", () => {
     expect(

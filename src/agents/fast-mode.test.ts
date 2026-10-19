@@ -1,4 +1,3 @@
-// Verifies fast-mode precedence across session, agent, and model defaults.
 import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { formatFastModeAutoLabel } from "../shared/fast-mode.js";
@@ -140,43 +139,21 @@ describe("resolveFastModeState", () => {
     expect(state).toMatchObject({ mode: "auto", source: "config", fastAutoOnSeconds: 15 });
   });
 
-  it("uses model config when the runtime passes a provider-qualified model ref", () => {
-    const cfg = modelConfig({ fastMode: true });
-
-    const state = resolve({
-      cfg,
-      model: "openai/gpt-5.5",
+  it.each([
+    ["openai/gpt-5.5", "openai", "openai/gpt-5.5", true, "config"],
+    [
+      "openrouter/anthropic/claude-sonnet-4-6",
+      "openrouter",
+      "anthropic/claude-sonnet-4-6",
+      true,
+      "config",
+    ],
+    ["anthropic/claude-sonnet-4-6", "openrouter", "anthropic/claude-sonnet-4-6", false, "default"],
+  ] as const)("scopes model config %s to provider %s", (key, provider, model, enabled, source) => {
+    expect(resolve({ cfg: modelConfig({ fastMode: true }, key), provider, model })).toMatchObject({
+      enabled,
+      source,
     });
-
-    expect(state).toMatchObject({ enabled: true, source: "config" });
-  });
-
-  it("uses canonical provider/model config for slash-containing model ids", () => {
-    // OpenRouter-style models can contain slashes, so matching must build the
-    // canonical provider/model key instead of splitting on the first slash.
-    const cfg = modelConfig({ fastMode: true }, "openrouter/anthropic/claude-sonnet-4-6");
-
-    const state = resolve({
-      cfg,
-      provider: "openrouter",
-      model: "anthropic/claude-sonnet-4-6",
-    });
-
-    expect(state).toMatchObject({ enabled: true, source: "config" });
-  });
-
-  it("does not use another provider's slash-containing model config", () => {
-    // Provider qualification prevents a model-id substring from borrowing
-    // another provider's fast-mode setting.
-    const cfg = modelConfig({ fastMode: true }, "anthropic/claude-sonnet-4-6");
-
-    const state = resolve({
-      cfg,
-      provider: "openrouter",
-      model: "anthropic/claude-sonnet-4-6",
-    });
-
-    expect(state).toMatchObject({ enabled: false, source: "default" });
   });
 });
 

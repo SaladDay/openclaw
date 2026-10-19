@@ -9,26 +9,29 @@ import {
   fingerprintResolvedAuthProfileCredential,
   fingerprintResolvedProviderAuth,
 } from "./execution-auth-binding.js";
+import type { ResolvedProviderAuth } from "./model-auth-runtime-shared.js";
 
 function jwt(claims: Record<string, unknown>): string {
   return `header.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`;
 }
 
-function oauth(
+type Identity = Partial<OAuthCredential>;
+
+function grant(
   provider: string,
   access: string,
   refresh: string,
-  identity: Partial<OAuthCredential> = {},
-) {
+  identity: Identity = {},
+): OAuthCredential {
+  return { type: "oauth", provider, access, refresh, expires: 1, ...identity };
+}
+function oauth(provider: string, access: string, refresh: string, identity: Identity = {}) {
   return fingerprintAuthProfileCredential({
     profileId: `${provider}:oauth`,
-    credential: { type: "oauth", provider, access, refresh, expires: 1, ...identity },
+    credential: grant(provider, access, refresh, identity),
   });
 }
-function resolved(
-  apiKey: string,
-  extra: Partial<NonNullable<Parameters<typeof fingerprintResolvedProviderAuth>[0]>> = {},
-) {
+function resolved(apiKey: string, extra: Partial<ResolvedProviderAuth> = {}) {
   return fingerprintResolvedProviderAuth({
     apiKey,
     source: "profile:openai:bound",
@@ -46,29 +49,22 @@ function aws(env: NodeJS.ProcessEnv) {
 }
 
 describe("execution auth binding fingerprints", () => {
-  it("rejects an opaque CLI owner without an executable identity", () => {
-    expect(
-      fingerprintOpaqueRuntimeOwner({
-        kind: "cli-runtime",
-        runner: "cli",
-        provider: "claude-cli",
-        backendId: "claude-cli",
-      }),
-    ).toBeUndefined();
-  });
-
-  it("requires and binds an opaque plugin harness implementation", () => {
+  it.each([
+    ["cli-runtime", "cli", "claude-cli", "claude-cli"],
+    ["plugin-harness", "embedded", "openai", "codex"],
+  ] as const)("requires an executable identity for %s", (kind, runner, provider, backendId) => {
     const fingerprint = (runtimeArtifactFingerprint?: string) =>
       fingerprintOpaqueRuntimeOwner({
-        kind: "plugin-harness",
-        runner: "embedded",
-        provider: "openai",
-        backendId: "codex",
-        ...(runtimeArtifactFingerprint ? { runtimeArtifactFingerprint } : {}),
+        kind,
+        runner,
+        provider,
+        backendId,
+        runtimeArtifactFingerprint,
       });
-
     expect(fingerprint()).toBeUndefined();
-    expect(fingerprint("codex-runtime-v1")).not.toBe(fingerprint("codex-runtime-v2"));
+    if (kind === "plugin-harness") {
+      expect(fingerprint("codex-runtime-v1")).not.toBe(fingerprint("codex-runtime-v2"));
+    }
   });
 
   it("rejects an unresolved static-secret reference", () => {
@@ -188,22 +184,14 @@ describe("execution auth binding fingerprints", () => {
     const fingerprint = (access: string) =>
       fingerprintAuthProfileOwnerShape({
         profileId: "anthropic:cli",
-        credential: {
-          type: "oauth",
-          provider: "anthropic",
-          access,
-          refresh: `refresh-${access}`,
-          expires: 1,
+        credential: grant("anthropic", access, `refresh-${access}`, {
           accountId: "account-1",
-        },
+        }),
       });
 
     expect(fingerprint("access-a")).toBe(fingerprint("access-b"));
     expect(
-      fingerprintAuthProfileOwnerShape({
-        profileId: "anthropic:missing",
-        credential: undefined,
-      }),
+      fingerprintAuthProfileOwnerShape({ profileId: "anthropic:missing", credential: undefined }),
     ).toBeUndefined();
   });
 
