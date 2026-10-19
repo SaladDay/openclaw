@@ -11,14 +11,17 @@ export function retrySqliteWorkerAdmission<T>(
   operation: () => T,
   {
     maxAttempts,
+    timeoutMs = Infinity,
     database,
     exhaustedMessage,
   }: {
     maxAttempts: number;
+    timeoutMs?: number;
     database?: EngineConnection;
     exhaustedMessage?: string;
   },
 ): T {
+  const deadline = performance.now() + timeoutMs;
   for (let attempt = 1; ; attempt += 1) {
     try {
       return operation();
@@ -32,7 +35,7 @@ export function retrySqliteWorkerAdmission<T>(
           throw error;
         }
       }
-      if (attempt >= maxAttempts) {
+      if (attempt >= maxAttempts || performance.now() >= deadline) {
         throw exhaustedMessage ? new Error(exhaustedMessage, { cause: error }) : error;
       }
       const owner = currentSqliteWorkerOperationAdmission.getStore()?.owner;

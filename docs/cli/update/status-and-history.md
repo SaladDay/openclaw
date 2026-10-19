@@ -100,6 +100,22 @@ If an update hands work to a background helper, the command has not finished the
 update. Follow its final `openclaw update status` command to check progress and the
 outcome. `openclaw gateway status --deep` checks Gateway health, not update progress.
 
+If `candidate-state-snapshot` has no recorded activity for 30 minutes, status and
+Doctor report a possible stalled history write, including for a recorded live
+driver. This warning does not declare the driver dead or change the run. Inspect
+the updater log and process while keeping the serving Gateway running. After
+the updater exits, run `openclaw update repair` before retrying.
+
+The installed updater owns progress recording. Released 2026.10.4 and 2026.10.5
+drivers can repeatedly copy shared state while retrying a slow commit admission,
+even after the candidate snapshot finishes. A newer candidate cannot replace
+that running parent. Current drivers avoid requester-policy copies in ledger
+writes and stop repeated commit admission failures after 120 attempts or a
+two-minute retry allowance. Each attempt releases its writer lock after the
+one-second commit-admission limit; the retry allowance is checked after rollback,
+so a slow host admission can overrun it before returning. Failure leaves an
+actionable error instead of retrying forever.
+
 Status also shows unfinished plugin data/settings upgrades and their repair commands,
 including when an older updater did not record those warnings in its run history.
 During an active update, let that update finish before following plugin repair

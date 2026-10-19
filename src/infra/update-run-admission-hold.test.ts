@@ -21,9 +21,9 @@ afterEach(async () => {
   await closeOpenClawStateDatabaseAsync();
 });
 
-it.each([false, true])(
-  "releases the writer before retrying delayed commit admission (revoked=%s)",
-  async (revoke) => {
+it.each(["delayed", "revoked", "non-converging"])(
+  "releases the writer before retrying %s commit admission",
+  async (outcome) => {
     const options = { env };
     const run = createUpdateRun({ trigger: "cli" }, options);
     await closeOpenClawStateDatabaseAsync();
@@ -39,8 +39,11 @@ it.each([false, true])(
     }, [databasePath])({ settled: Promise.resolve({ kind: "completed" }) }).admission;
     let now = process.hrtime.bigint();
     vi.spyOn(process.hrtime, "bigint").mockImplementation(() => now);
+    let elapsedMs = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => elapsedMs);
     let stage: string | undefined;
     let delayed = false;
+    let commitAttempts = 0;
     const requestAdmission = workerAdmission.requestSqliteWorkerOperationAdmission;
     vi.spyOn(workerAdmission, "requestSqliteWorkerOperationAdmission").mockImplementation(
       (request) => {
@@ -54,11 +57,16 @@ it.each([false, true])(
     );
     let competingWrite = false;
     vi.spyOn(Atomics, "wait").mockImplementation((_array, _index, _value, timeout) => {
-      if (stage === "commit" && !delayed) {
+      if (stage === "commit" && (!delayed || outcome === "non-converging")) {
+        // Stop the defective unlimited loop deterministically instead of hanging the test.
+        if (++commitAttempts > 120) {
+          throw new Error("commit admission retried beyond its budget");
+        }
         delayed = true;
         // Delay the host decision, not SQL; no wall-clock wait is needed.
         expect(() => competitor.exec("BEGIN IMMEDIATE")).toThrow("database is locked");
         now += 20_537_000_000n;
+        elapsedMs += 20_537;
         if (timeout === undefined) {
           admission.service();
         }
@@ -71,7 +79,7 @@ it.each([false, true])(
           .run(JSON.stringify({ sessionKey: "competing-writer" }), run.runId);
         competitor.exec("COMMIT");
         competingWrite = true;
-        revoked = revoke;
+        revoked = outcome === "revoked";
       }
       admission.service();
       return "ok";
@@ -95,14 +103,19 @@ it.each([false, true])(
             ),
           ),
         );
-      if (revoke) {
+      if (outcome === "non-converging") {
+        expect(execute).toThrow(/120 attempts.*rolled back.*openclaw update repair/);
+        expect(commitAttempts).toBe(6);
+        competitor.exec("BEGIN IMMEDIATE");
+        competitor.exec("ROLLBACK");
+      } else if (outcome === "revoked") {
         expect(execute).toThrow("admission was refused");
       } else {
         expect(execute()).toMatchObject({ kind: "recorded", record: { phase: "validating" } });
       }
       expect(competingWrite).toBe(true);
       expect(getUpdateRun(run.runId, options)).toMatchObject({
-        phase: revoke ? "requested" : "validating",
+        phase: outcome === "delayed" ? "validating" : "requested",
         origin: { sessionKey: "competing-writer" },
       });
     } finally {

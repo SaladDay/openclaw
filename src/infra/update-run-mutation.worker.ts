@@ -47,8 +47,14 @@ export function withUpdateRunWriteAdmission<T>(
       facts: undefined,
       ...(stage === "commit" ? { deadlineMs: SQLITE_WORKER_ADMISSION_DEADLINE_MS } : {}),
     });
-  // Required update evidence retains its retry policy; each attempt obtains fresh admission.
-  return retrySqliteWorkerAdmission(() => operation(assertCurrent), { maxAttempts: Infinity });
+  // Retry within the driver's two-minute writer allowance, releasing it between attempts.
+  // A consistently slow host must report failure instead of copying policy state forever.
+  return retrySqliteWorkerAdmission(() => operation(assertCurrent), {
+    maxAttempts: 120,
+    timeoutMs: 120_000,
+    exhaustedMessage:
+      "Update history commit admission did not converge within its 120-second retry allowance (at most 120 attempts); the receipt was rolled back. Check host load and `openclaw update status`. After this updater exits, run `openclaw update repair` before retrying.",
+  });
 }
 
 export function recordUpdateRunMutationInWorker(

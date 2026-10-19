@@ -12,6 +12,7 @@ import { reconcileInterruptedUpdateRuns } from "../infra/update-run-interruption
 import {
   createUpdateRun,
   finishUpdateRun,
+  recordUpdateRunPhase,
   recordUpdateRunStep,
 } from "../infra/update-run-ledger.js";
 import { getUpdateRun, listUpdateRunsAsync } from "../infra/update-run-reader.js";
@@ -53,6 +54,44 @@ beforeEach(() => {
   vi.mocked(readInterruptedUpdateCandidateAsync).mockResolvedValue(undefined);
 });
 afterEach(() => vi.resetAllMocks());
+
+it("reports an inactive candidate snapshot without abandoning its recorded driver", async () => {
+  await withOpenClawTestState({ label: "update-snapshot-stall" }, async () => {
+    const clock = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(Date.now() - ABANDONED_UPDATE_RUN_MS - 1_000);
+    let run: UpdateRunRecord;
+    try {
+      run = createUpdateRun({
+        trigger: "chat",
+        origin: { driver: { pid: 1234, host: "fixture", startIdentity: "12345" } },
+      });
+      recordUpdateRunPhase(run.runId, "validating");
+      run = recordUpdateRunStep(run.runId, {
+        step: "candidate-state-snapshot",
+        status: "in_progress",
+        startedAtMs: Date.now(),
+        detail: "shared database snapshot: completed",
+      })!;
+    } finally {
+      clock.mockRestore();
+    }
+    vi.mocked(listUpdateRunsAsync).mockResolvedValue([run]);
+    await noteStaleUpdateRuns({ migrateState: false });
+    expect(note).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /candidate-state-snapshot.*installed updater.*keep the serving Gateway running.*openclaw update repair/,
+      ),
+      "Update history",
+    );
+    expect(getUpdateRun(run.runId)).toEqual(run);
+
+    vi.mocked(note).mockClear();
+    vi.mocked(listUpdateRunsAsync).mockResolvedValue([{ ...run, updatedAtMs: Date.now() }]);
+    await noteStaleUpdateRuns({ migrateState: false });
+    expect(note).not.toHaveBeenCalled();
+  });
+});
 
 it("keeps history read failure advisory without refreshing a running update", async () => {
   await withOpenClawTestState({ label: "update-history-refusal" }, async () => {

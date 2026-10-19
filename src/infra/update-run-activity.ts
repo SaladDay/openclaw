@@ -187,8 +187,17 @@ function inspectUpdateRunDriverAbandonment(
   return input.explicit ? "operator-reconciled-inactive-run" : undefined;
 }
 
-/** Legacy activity cannot prove death; reporting must leave recovery to the operator. */
+/** Inactivity cannot prove death; reporting must leave recovery to the operator. */
 export function staleUpdateRunGuidance(record: UpdateRunRecord): string | undefined {
+  if (
+    record.status === "running" &&
+    record.phase === "validating" &&
+    record.steps.findLast((step) => step.status === "in_progress")?.step ===
+      "candidate-state-snapshot" &&
+    Date.now() - updateRunLastActivity(record) > ABANDONED_UPDATE_RUN_MS
+  ) {
+    return `candidate-state-snapshot has no recorded progress since ${new Date(updateRunLastActivity(record)).toISOString()}. The installed updater may be retrying its history write even after the candidate copy completed. Inspect the updater's log and driver process; keep the serving Gateway running. A newer candidate cannot replace an already-running installed updater. After the driver exits, run \`openclaw update repair\` before retrying.`;
+  }
   return isStaleIdentitylessUpdateRun(record)
     ? `no activity since ${new Date(updateRunLastActivity(record)).toISOString()}; if no update is running, run \`openclaw update repair\` or start a new \`openclaw update\``
     : undefined;
