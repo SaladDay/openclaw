@@ -1,11 +1,10 @@
-// Separate Gateway processes prove that an operator can adopt a tombstoned task.
+// Separate Gateway processes prove that a fresh operator turn can continue retained work.
 import { once } from "node:events";
 import { readFile } from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
 import path from "node:path";
 import { asRecord, isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
-import type { SessionsRecoverResult } from "../packages/gateway-protocol/src/index.js";
 import { readPendingInputSource } from "../src/config/sessions/session-pending-input-source.js";
 import { parseSessionPendingInputMessage } from "../src/config/sessions/session-pending-input-value.js";
 import type { GatewayClient } from "../src/gateway/client.js";
@@ -487,7 +486,7 @@ it.skipIf(process.platform === "win32")(
 );
 
 it.skipIf(process.platform === "win32").for(["managed", "SIGTERM", "SIGKILL"] as const)(
-  "resumes a tombstoned delegated task in place after %s with fresh operator authority",
+  "continues retired delegated work in place after %s with fresh operator authority",
   { timeout: 180_000 },
   async (mode, { signal }) => {
     const provider = await startProvider(signal, mode === "SIGKILL");
@@ -597,14 +596,15 @@ it.skipIf(process.platform === "win32").for(["managed", "SIGTERM", "SIGKILL"] as
               for (const name of ["continue", "revoked", "restricted"] as const) {
                 expect(await row(name)).toMatchObject({
                   sessionId: identities.get(name),
-                  restartRecoveryStatus: "tombstoned",
+                  status: "interrupted",
                   hasActiveRun: false,
                 });
-                expect(
-                  JSON.stringify(
-                    await client!.request("chat.history", { sessionKey: targetKey(name) }),
-                  ),
-                ).toContain("delegated recovery sender authority is unavailable");
+                expect((await row(name))?.restartRecoveryStatus).toBeUndefined();
+                const history = JSON.stringify(
+                  await client!.request("chat.history", { sessionKey: targetKey(name) }),
+                );
+                expect(history).toContain("delegated recovery sender authority is unavailable");
+                expect(history).toContain("Send a new authenticated message to continue");
               }
             },
             { timeout: 30_000 },
@@ -620,36 +620,26 @@ it.skipIf(process.platform === "win32").for(["managed", "SIGTERM", "SIGKILL"] as
             recoveryCycleId: "cancelled-has-no-recovery-cycle",
           }),
         ).rejects.toThrow(/restart-tombstoned|not recoverable|changed/);
-        const resumeRequests = new Map<
-          ResumeCase,
-          {
-            key: string;
-            mode: "in-place";
-            sessionId: string;
-            recoveryCycleId: string;
-          }
-        >();
+        expect(provider.resumeInputs).toHaveLength(0);
         await client!.request("sessions.patch", {
           key: targetKey("restricted"),
           permissionMode: "read-only",
         });
         for (const name of ["revoked", "restricted", "continue"] as const) {
           const current = await row(name);
-          expect(current?.restartRecoveryCycleId).toEqual(expect.any(String));
-          const request = {
-            key: targetKey(name),
-            mode: "in-place" as const,
-            sessionId: identities.get(name)!,
-            recoveryCycleId: current!.restartRecoveryCycleId!,
-          };
-          resumeRequests.set(name, request);
+          expect(current?.restartRecoveryCycleId).toBeUndefined();
           provider.adopted(name);
-          const resumed = await client!.request<SessionsRecoverResult>("sessions.recover", request);
-          expect(resumed).toMatchObject({
-            key: targetKey(name),
-            sessionId: identities.get(name),
-            continuation: { status: "started" },
-          });
+          await client!.request(
+            "chat.send",
+            {
+              sessionKey: targetKey(name),
+              message:
+                "Continue the retained task. Prior tools have an unknown outcome. " +
+                "Verify what happened before repeating an action.",
+              idempotencyKey: `operator-continue-${name}`,
+            },
+            { expectFinal: false },
+          );
           if (name === "revoked") {
             await race(provider.revocationReady);
             await applyReadOnly(client!, instance, targetKey("revoked"));
@@ -664,7 +654,12 @@ it.skipIf(process.platform === "win32").for(["managed", "SIGTERM", "SIGKILL"] as
         await race(provider.resumed);
         if (mode === "SIGKILL") {
           await expect(
-            client!.request("sessions.recover", resumeRequests.get("continue")!),
+            client!.request("sessions.recover", {
+              key: targetKey("continue"),
+              mode: "in-place",
+              sessionId: identities.get("continue"),
+              recoveryCycleId: "retired-input-has-no-recovery-cycle",
+            }),
           ).rejects.toThrow(/restart-tombstoned|changed/);
           await restart("SIGKILL");
           provider.release();
