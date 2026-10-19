@@ -28,13 +28,21 @@ const key = (name: string) => `agent:main:shutdown-settlement-${name}`;
 const marker = (name: string) => `SHUTDOWN_SETTLEMENT_${name}`;
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
-function toolCall(response: ServerResponse, name: string, args: object, ordinal: number) {
+function toolCall(
+  response: ServerResponse,
+  tools: string[],
+  name: string,
+  args: object,
+  ordinal: number,
+) {
+  const tool = tools.includes(name) ? name : "dispatch_action";
+  expect(tools).toContain(tool);
   const item = {
     type: "function_call",
     id: `fc_settlement_${ordinal}`,
     call_id: `call_settlement_${ordinal}`,
-    name,
-    arguments: JSON.stringify(args),
+    name: tool,
+    arguments: JSON.stringify(tool === "dispatch_action" ? { id: name, args } : args),
   };
   writeOpenAiResponsesSse(response, [
     { type: "response.output_item.added", output_index: 0, item: { ...item, arguments: "" } },
@@ -148,9 +156,9 @@ it(
             calls.set(name, count);
             ordinal++;
             if (name === "spawn" && count === 1) {
-              expect(tools).toContain("sessions_spawn");
               toolCall(
                 response,
+                tools,
                 "sessions_spawn",
                 {
                   taskName: "shutdown_child",
@@ -164,9 +172,9 @@ it(
               return;
             }
             if (name === "send" && count === 1) {
-              expect(tools).toContain("sessions_send");
               toolCall(
                 response,
+                tools,
                 "sessions_send",
                 { sessionKey: key("nested"), message: marker("nested"), timeoutSeconds: 120 },
                 ordinal,
@@ -178,6 +186,7 @@ it(
               const alias = `!exec ${quote(process.execPath)} -e ${quote(source)}`;
               toolCall(
                 response,
+                tools,
                 "exec",
                 {
                   command: `git -c ${quote(`alias.hold=${alias}`)} hold`,
