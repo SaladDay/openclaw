@@ -22,7 +22,7 @@ const originalPrepare = Reflect.get(DatabaseSync.prototype, "prepare") as Databa
 async function loadNodeSqliteWithVersion(
   version: string,
   extensionLoadingOmitted?: number,
-  storage: Record<string, string | null> = {},
+  storage: { sourceId?: string | null; compileOptions?: string | null } = {},
 ) {
   const prepare = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (
     this: DatabaseSync,

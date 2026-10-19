@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import { captureSqliteNativeRuntimeAdmission, requireNodeSqlite } from "../infra/node-sqlite.js";
+import {
+  captureSqliteNativeRuntimeAdmission,
+  requireNodeSqlite,
+} from "../infra/sqlite-native-runtime.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "./openclaw-state-db-contract.js";

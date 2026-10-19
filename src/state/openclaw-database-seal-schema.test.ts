@@ -17,8 +17,8 @@ const inputs = vi.hoisted(() => ({
   stateVersion: 28,
   storageIdentity: "sqlite-3.53.4-source-build" as string | undefined,
 }));
-vi.mock("../infra/node-sqlite.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../infra/node-sqlite.js")>();
+vi.mock("../infra/sqlite-native-runtime.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../infra/sqlite-native-runtime.js")>();
   return {
     ...actual,
     captureSqliteNativeRuntimeAdmission: () => ({
