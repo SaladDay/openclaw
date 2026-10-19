@@ -352,10 +352,6 @@ async function maybeWakeRequesterAfterAllChildrenSettledBound(
     await completeBatch(settledBatch, selectedState);
     return false;
   }
-  // A frozen batch closed by cancellation retires above; otherwise it waits for its tree.
-  if (waitForDescendants(initialDescendants)) {
-    return false;
-  }
   const interruptedContinuations = settledBatch.filter(isQuietSubagentRestartContinuation);
   const requiredSettled = settledBatch.filter(
     (entry) => entry.expectsCompletionMessage === true || interruptedContinuations.includes(entry),
@@ -383,6 +379,11 @@ async function maybeWakeRequesterAfterAllChildrenSettledBound(
         requesterDepth >= 1))
   ) {
     await completeBatch(settledBatch, selectedState);
+    return false;
+  }
+  // Only an owed continuation waits for descendants. A delivered single-child
+  // wave must not retain its redundant wake behind unrelated running siblings.
+  if (waitForDescendants(initialDescendants)) {
     return false;
   }
 
