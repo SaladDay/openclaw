@@ -1,4 +1,6 @@
 /** Stateless convergence of the memory-core-owned dreaming cron job family. */
+import { tryResolveAmbientOwnerAgentId } from "openclaw/plugin-sdk/agent-scope-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   LEGACY_MEMORY_LIGHT_DREAMING_CRON_NAME,
   LEGACY_MEMORY_LIGHT_DREAMING_CRON_TAG,
@@ -86,7 +88,14 @@ export type CronServiceLike = {
 };
 
 type ReconcileResult = {
-  status: "unavailable" | "disabled" | "doctor-required" | "added" | "updated" | "noop";
+  status:
+    | "unavailable"
+    | "disabled"
+    | "doctor-required"
+    | "owner-required"
+    | "added"
+    | "updated"
+    | "noop";
   removed: number;
 };
 
@@ -191,6 +200,7 @@ function sortManagedJobs(managed: ManagedCronJobLike[]): ManagedCronJobLike[] {
 
 export async function reconcileShortTermDreamingCronJob(params: {
   cron: CronServiceLike | null;
+  cfg: OpenClawConfig;
   config: ShortTermPromotionDreamingConfig;
   logger: Logger;
 }): Promise<ReconcileResult> {
@@ -256,6 +266,9 @@ export async function reconcileShortTermDreamingCronJob(params: {
   const desired = buildManagedDreamingCronJob(params.config);
   const primary = managed[0];
   if (!primary) {
+    if (!tryResolveAmbientOwnerAgentId(params.cfg)) {
+      return { status: "owner-required", removed: 0 };
+    }
     await cron.add(desired);
     params.logger.info("memory-core: created managed dreaming cron job.");
     return { status: "added", removed: 0 };

@@ -10,6 +10,15 @@ sidebarTitle: "Agent and sessions"
 
 The agent, session, transcript, and sandbox surfaces of `api.runtime`, plus the request-bound capabilities a plugin command handler receives. Part of the [Plugin runtime helpers](/plugins/sdk-runtime) reference.
 
+## Ambient system ownership
+
+`tryResolveAmbientOwnerAgentId(config)` from `openclaw/plugin-sdk/agent-scope-runtime`
+returns the configured ambient system owner, a permitted legacy default, or the
+sole configured agent. It returns `undefined` when no owner resolves. Background
+services can use this observation to defer optional work without choosing an
+arbitrary agent. It does not grant execution authority; the host service still
+validates the owner when performing the operation.
+
 ## Plugin command runtime helpers
 
 Plugin command handlers receive request-bound capabilities through

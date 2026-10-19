@@ -20,6 +20,7 @@ export {
 } from "../agents/agent-scope.js";
 
 export { resolveSessionAgentIdStrict, resolveSessionAgentIdsStrict };
+export { tryResolveAmbientOwnerAgentId };
 
 type SessionAgentResolutionParams = Parameters<typeof resolveSessionAgentIdsStrict>[0];
 
