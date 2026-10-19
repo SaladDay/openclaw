@@ -29,7 +29,7 @@ function expectContract(tool: AnyAgentTool, details: unknown): void {
 async function expectResult(
   tool: AnyAgentTool,
   args: Record<string, unknown>,
-  details: unknown,
+  details: Record<string, unknown>,
   exact = false,
 ) {
   const result = await tool.execute("contract", args);

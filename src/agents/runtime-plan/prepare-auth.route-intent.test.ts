@@ -59,7 +59,7 @@ it.each([
     config.agents!.defaults!.models = {
       "openai/gpt-5.5": { alias: "metered", agentRuntime: { id: runtime } },
     };
-    if (profileMetadata === false) {
+    if (!profileMetadata) {
       config.auth = undefined;
     }
     if (observedResponses) {

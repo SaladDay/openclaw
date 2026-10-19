@@ -24,11 +24,8 @@ const envKeys = [
   "OPENCLAW_DISABLE_BUNDLED_PLUGINS",
 ];
 const captureEnv = () => Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
-const waitForPhase = (
-  gate: ReturnType<typeof createDeferred>,
-  body: Promise<void>,
-  phase: string,
-) => awaitGateBeforeSettlement(gate.promise, body, `Corpus body finished before ${phase}`);
+const waitForPhase = (gate: { promise: Promise<void> }, body: Promise<void>, phase: string) =>
+  awaitGateBeforeSettlement(gate.promise, body, `Corpus body finished before ${phase}`);
 
 function expectRetainedInputs(home: string) {
   expect(process.env.HOME).toBe(home);

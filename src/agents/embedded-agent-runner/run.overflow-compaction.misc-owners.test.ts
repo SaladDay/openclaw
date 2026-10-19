@@ -141,7 +141,7 @@ it("retains bounded ordered delivery facts and source finality across generation
     didSendDeterministicApprovalPrompt: true,
     sourceReplyDelivered: true,
     didDeliverSourceReplyViaMessageTool: true,
-  };
+  } as const;
   const target = {
     tool: "message",
     provider: "telegram",

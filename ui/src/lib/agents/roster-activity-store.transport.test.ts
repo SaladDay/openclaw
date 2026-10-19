@@ -113,14 +113,14 @@ it.each(["client", "account", "recovery scope"])(
     });
     f.subscribe();
     await vi.advanceTimersByTimeAsync(0);
-    f.respond(0, "Retained work");
+    await f.respond(0, "Retained work");
     await vi.advanceTimersByTimeAsync(0);
     f.source.publish({ ...f.source.gateway.snapshot, phase: "reconnecting" });
     expect(f.store.snapshot.cards[0]?.preview).toBe("Retained work");
     f.source.publish({ ...f.source.gateway.snapshot, phase: "connected" });
     await vi.advanceTimersByTimeAsync(0);
     expect(f.store.snapshot.cards[0]?.preview).toBe("Retained work");
-    f.respond(1, "Fresh work");
+    await f.respond(1, "Fresh work");
     await vi.advanceTimersByTimeAsync(0);
     expect(f.store.snapshot.cards[0]?.preview).toBe("Fresh work");
     f.source.publish({
@@ -158,7 +158,7 @@ it.each(["operator.sessions.read", "operator.sessions.write"])(
     f.subscribe();
     await vi.advanceTimersByTimeAsync(0);
     expect(f.requests).toHaveLength(1);
-    f.respond(0, "Permitted activity");
+    await f.respond(0, "Permitted activity");
     await vi.advanceTimersByTimeAsync(0);
     expect(f.store.snapshot.cards[0]?.preview).toBe("Permitted activity");
 
@@ -168,7 +168,7 @@ it.each(["operator.sessions.read", "operator.sessions.write"])(
     await vi.advanceTimersByTimeAsync(0);
     expect(f.requests).toHaveLength(2);
     expect(f.store.snapshot.cards[0]?.preview).toBe("Permitted activity");
-    f.respond(1, "Fresh permitted activity");
+    await f.respond(1, "Fresh permitted activity");
     await vi.advanceTimersByTimeAsync(0);
     expect(f.store.snapshot.cards[0]?.preview).toBe("Fresh permitted activity");
 
@@ -318,7 +318,8 @@ it.each(["same-client", "detached", "replacement-client"])(
       f.detach();
     }
     if (cause === "replacement-client") {
-      const client = createTestGatewayClient(f.source.gateway.snapshot.client!.request);
+      const previousClient = f.source.gateway.snapshot.client!;
+      const client = createTestGatewayClient((...args) => previousClient.request(...args));
       f.source.publish({ ...f.source.gateway.snapshot, client });
       void f.store.refresh();
     } else {

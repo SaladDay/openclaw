@@ -316,18 +316,19 @@ describe("verify-pr-hosted-gates", () => {
   });
 
   it("records path-filtered hosted gates as not applicable for QA-only changes", () => {
-    const evidence = collectHostedGateEvidence({
-      sha,
-      workflowRuns: [
-        successfulRun("CI", 1, "2026-06-17T10:47:00Z"),
-        successfulRun("Workflow Sanity", 2, "2026-06-17T10:48:00Z"),
+    const evidence = collectHostedGateEvidence(
+      [
+        makeRun("CI", 1, "2026-06-17T10:47:00Z"),
+        makeRun("Workflow Sanity", 2, "2026-06-17T10:48:00Z"),
       ],
-      notApplicableScheduledWorkflows: [
-        "Blacksmith Testbox",
-        "Blacksmith ARM Testbox",
-        "Blacksmith Build Artifacts Testbox",
-      ],
-    });
+      {
+        notApplicableScheduledWorkflows: [
+          "Blacksmith Testbox",
+          "Blacksmith ARM Testbox",
+          "Blacksmith Build Artifacts Testbox",
+        ],
+      },
+    );
 
     expect(evidence.workflows).toEqual([
       expect.objectContaining({ name: "CI", id: 1 }),

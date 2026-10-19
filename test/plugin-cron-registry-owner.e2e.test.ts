@@ -519,9 +519,7 @@ it(
           expectedJob(pinnedId, "cron-pinned-late"),
         ]),
       );
-      const nextRunAtChurn = new Map(
-        afterChurn.map((job) => [job.id, job.nextRunAtMs ?? job.state.nextRunAtMs]),
-      );
+      const nextRunAtChurn = new Map(afterChurn.map((job) => [job.id, job.state.nextRunAtMs]));
       expect([...nextRunAtChurn.values()]).toEqual([expect.any(Number), expect.any(Number)]);
 
       await expectRecurringRuns(2);
@@ -532,9 +530,9 @@ it(
       expect(afterRecurringRuns.map((job) => job.id).toSorted()).toEqual(expectedIds);
       for (const job of afterRecurringRuns) {
         expect(job).toMatchObject({ enabled: true, deleteAfterRun: false });
-        expect(job.lastRunStatus ?? job.state.lastRunStatus ?? job.state.lastStatus).toBe("ok");
-        const lastRunAtMs = job.lastRunAtMs ?? job.state.lastRunAtMs;
-        const nextRunAtMs = job.nextRunAtMs ?? job.state.nextRunAtMs;
+        expect(job.state.lastRunStatus ?? job.state.lastStatus).toBe("ok");
+        const lastRunAtMs = job.state.lastRunAtMs;
+        const nextRunAtMs = job.state.nextRunAtMs;
         expect(lastRunAtMs).toBeTypeOf("number");
         expect(nextRunAtMs).toBeTypeOf("number");
         expect(nextRunAtMs as number).toBeGreaterThan(lastRunAtMs as number);

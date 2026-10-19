@@ -131,9 +131,9 @@ describe("qa scenario catalog causality", () => {
     );
     expect(scenario).toMatchObject({
       execution: { retryCount: 0, runtime: "openclaw" },
-      runtimePairLane: undefined,
       gatewayConfigPatch: { tools: { alsoAllow: ["qa_restart_wait", "qa_restart_unsafe_probe"] } },
     });
+    expect(scenario.runtimePairLane).toBeUndefined();
     expectContains(
       prompt,
       ...["components", "risks", "deployments", "controls", "recommendation"].map(

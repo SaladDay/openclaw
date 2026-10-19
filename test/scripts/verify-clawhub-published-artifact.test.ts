@@ -287,7 +287,9 @@ it.each([
       verifyPackage(writeExpectedArtifact(bytes), { fetchImpl, attempts: 3, delayMs: 1, sleep }),
     ).rejects.toThrow(message);
     expect(sleep).not.toHaveBeenCalled();
-    expect(fetchImpl).toHaveBeenCalledTimes(stage === "detail" ? 1 : stage === "publisher" ? 2 : 4);
+    expect(fetchImpl).toHaveBeenCalledTimes(
+      stage === "detail" ? 1 : stage === "publisher" ? 2 : stage === "metadata" ? 3 : 4,
+    );
   },
 );
 

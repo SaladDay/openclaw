@@ -47,7 +47,7 @@ describe("TerminalSessionManager idle eviction", () => {
   it("spares a victim that gains a viewer during the replacement spawn", async () => {
     const victimPty = makeFakePty();
     const replacementPty = makeFakePty();
-    const gate = createDeferred<void>();
+    const gate = createDeferred();
     let spawnCount = 0;
     const { manager, open } = trackingManager(1, async () => {
       if (spawnCount++ === 0) {
@@ -72,7 +72,7 @@ describe("TerminalSessionManager idle eviction", () => {
 
   it("evicts the freshly idlest session when the oldest becomes active mid-spawn", async () => {
     vi.useFakeTimers();
-    const gate = createDeferred<void>();
+    const gate = createDeferred();
     let gateNextSpawn = false;
     const { manager, ptys, open } = trackingManager(2, async () => {
       if (gateNextSpawn) {
