@@ -15,7 +15,7 @@ import * as payloads from "../pages/chat/attachment-payload-store.ts";
 import { createDraftFixture } from "../pages/new-session/draft-submission-flow.test-support.ts";
 import { installDialogPolyfill } from "../test-helpers/modal-dialog.ts";
 import { mountSolid } from "../test-helpers/mount-solid.ts";
-import { flush } from "../test-helpers/solid-settle.ts";
+import { flush, waitForSolid } from "../test-helpers/solid-settle.ts";
 import {
   openPalette,
   prepareDraftContext,
@@ -158,7 +158,9 @@ describe("command palette paste-only images", () => {
     expect(paste(input, [image()]).defaultPrevented).toBe(true);
     await palette.updateComplete;
     expect(start().disabled).toBe(true);
-    expect(query('.chat-attachment-thumb[aria-busy="true"]')).not.toBeNull();
+    await waitForSolid(() =>
+      expect(query('.chat-attachment-thumb[aria-busy="true"]')).not.toBeNull(),
+    );
     key(input, { key: "Enter", ctrlKey: true });
     expect(create).not.toHaveBeenCalled();
     finishRead(0);
@@ -212,6 +214,7 @@ describe("command palette paste-only images", () => {
     paste(input, [image("unreadable.png")]);
     readers[0]!.dispatchEvent(new ProgressEvent("error"));
     await palette.updateComplete;
+    await waitForSolid(() => expect(query(".chat-attachment-thumb--error")).not.toBeNull());
     const failed = query(".chat-attachment-thumb--error")!;
     expect(failed.querySelector('[role="img"]')?.getAttribute("aria-label")).toContain(
       "unreadable.png",

@@ -41,10 +41,21 @@ describe("PaletteSessionDraft", () => {
       initialRun: { status: "idle" },
     });
     vi.mocked(context.placementStartup.start).mockImplementation(() => submitted.resolve());
+    const readers: FileReader[] = [];
+    vi.spyOn(FileReader.prototype, "readAsDataURL").mockImplementation(function (this: FileReader) {
+      readers.push(this);
+    });
     host.draft.setMessage("Carry my cold Send into the required worker");
     host.draft.adoptImageFiles([new File(["cold attachment"], "cold.txt", { type: "text/plain" })]);
     await host.updateComplete;
-    expect(host.querySelector('.chat-attachment-loading[data-state="reading"]')).not.toBeNull();
+    await waitForSolid(() =>
+      expect(host.querySelector('.chat-attachment-loading[data-state="reading"]')).not.toBeNull(),
+    );
+    const pendingReader = expectDefined(readers[0], "pending cold attachment reader");
+    Object.defineProperty(pendingReader, "result", {
+      value: "data:text/plain;base64," + btoa("cold attachment"),
+    });
+    pendingReader.dispatchEvent(new ProgressEvent("load"));
     await waitForSolid(() => {
       expect(host.querySelector('.chat-attachment-loading[data-state="ready"]')).not.toBeNull();
     });
