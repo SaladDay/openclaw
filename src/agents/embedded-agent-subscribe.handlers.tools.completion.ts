@@ -65,7 +65,6 @@ import {
   emitAgentEventCallbackBestEffort,
   emitToolActivityEvent,
   isExecToolName,
-  recordTrackedItemEvent,
   toolStartData,
 } from "./embedded-agent-subscribe.handlers.tools.start.js";
 import type { ToolHandlerContext } from "./embedded-agent-subscribe.handlers.types.js";
@@ -433,8 +432,9 @@ export async function prepareToolExecutionEnd(
     endedAt,
     ...(errorMessage ? { error: errorMessage } : {}),
   };
-  // Settlement is an execution fact even when stale or rejected activity cannot be published.
-  recordTrackedItemEvent(ctx, itemData);
+  // Activity acceptance can suppress presentation, but the tool has settled.
+  ctx.state.itemActiveIds.delete(itemData.itemId);
+  ctx.state.itemCompletedCount += 1;
   const hideFromChannelProgress = explicitHideFromChannelProgress;
   const createResultData = () => ({
     phase: "result",
