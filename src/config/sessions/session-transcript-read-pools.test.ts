@@ -8,7 +8,7 @@ import { closeOpenClawAgentDatabaseByPathAsync } from "../../state/openclaw-agen
 import { createOpenClawDatabaseMaintenanceScope } from "../../state/openclaw-state-db-async-lifecycle.js";
 import { closeOpenClawStateDatabaseAsync } from "../../state/openclaw-state-db-cache.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { createSessionTranscriptReadPool } from "./session-transcript-read-pools.js";
+import { createSessionTranscriptReadPool } from "./session-transcript-read-worker-runtime.js";
 import type { SessionSqliteTargetWorkerInput } from "./session-transcript-worker-read.types.js";
 
 function readWorkers(contexts: readonly unknown[]): Worker[] {
