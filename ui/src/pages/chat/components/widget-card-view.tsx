@@ -1,12 +1,5 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import {
-  createMemo,
-  createSignal,
-  onSettled,
-  Show,
-  untrack,
-  useContext,
-} from "solid-js";
+import { createMemo, createSignal, onSettled, Show, untrack, useContext } from "solid-js";
 import { ensureCustomElementDefined } from "../../../app/lazy-custom-element.ts";
 import type { OpenClawCanvasWidgetView } from "../../../components/canvas-widget-view.tsx";
 import { dispatchWidgetPrompt } from "../../../components/mcp-app-security.ts";
