@@ -371,6 +371,7 @@ export function acquireHistoryDatabaseResource(
         }
       },
       retainCandidate(candidate) {
+        observeOpenClawDatabaseMaintenanceResource(unregister);
         for (const pathname of new Set([candidate.path, candidate.physicalPath])) {
           const aliasKey = JSON.stringify([pathname, candidate.scope]);
           if (!aliases.has(aliasKey)) {
