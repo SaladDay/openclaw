@@ -22,6 +22,43 @@ const trustedPublisher = {
   repository: "openclaw/openclaw",
   workflowFilename: "plugin-clawhub-release.yml",
 };
+const fixturePackageName = "@openclaw/demo-plugin";
+const packagePath = "/api/v1/packages/%40openclaw%2Fdemo-plugin";
+const publishedPackage = { status: 200, body: { trustedPublisher } };
+
+function availablePackageFetch(override: (pathname: string) => Response | undefined) {
+  const { fetchImpl } = createClawHubPlanFetch({
+    packages: { [fixturePackageName]: { status: 200 } },
+    trustedPublishers: { [fixturePackageName]: publishedPackage },
+    versions: { [`${fixturePackageName}@2026.4.1`]: 404 },
+  });
+  const wrapped: typeof fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    return override(new URL(url).pathname) ?? fetchImpl(input, init);
+  };
+  return wrapped;
+}
+
+function planOptions(rootDir: string, fetchImpl: typeof fetch) {
+  return {
+    rootDir,
+    fetchImpl,
+    selection: [fixturePackageName],
+    registryBaseUrl: "https://clawhub.ai",
+  };
+}
+
+function publishEnv(repoDir: string, env: NodeJS.ProcessEnv = {}) {
+  return {
+    ...process.env,
+    PATH: `${join(repoDir, "bin")}${delimiter}${process.env.PATH ?? ""}`,
+    ...env,
+  };
+}
+const publishScript = join(process.cwd(), "scripts/plugin-clawhub-publish.sh");
+function publishArgs(mode: string, target = "extensions/demo-plugin") {
+  return [publishScript, mode, target];
+}
 
 afterEach(() => {
   cleanupTempDirs(tempDirs);
@@ -176,20 +213,8 @@ describe("collectPluginClawHubReleasePlan", () => {
       (extensionId) => `@openclaw/${extensionId}`,
     );
     const baseFetch = createClawHubPlanFetch({
-      packages: Object.fromEntries(
-        packageNames.map((packageName) => [packageName, { status: 200 }]),
-      ),
-      trustedPublishers: Object.fromEntries(
-        packageNames.map((packageName) => [
-          packageName,
-          {
-            status: 200,
-            body: {
-              trustedPublisher,
-            },
-          },
-        ]),
-      ),
+      packages: Object.fromEntries(packageNames.map((name) => [name, { status: 200 }])),
+      trustedPublishers: Object.fromEntries(packageNames.map((name) => [name, publishedPackage])),
       versions: Object.fromEntries(
         packageNames.map((packageName) => [`${packageName}@2026.4.1`, 404]),
       ),
@@ -230,39 +255,19 @@ describe("collectPluginClawHubReleasePlan", () => {
     const repoDir = createTempPluginRepo();
     let versionRequests = 0;
     const retryDelays: number[] = [];
-    const fetchImpl: typeof fetch = async (input) => {
-      const requestUrl =
-        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      const pathname = new URL(requestUrl).pathname;
-      if (pathname === "/api/v1/packages/%40openclaw%2Fdemo-plugin") {
-        return new Response("{}", { status: 200 });
-      }
-      if (pathname === "/api/v1/packages/%40openclaw%2Fdemo-plugin/trusted-publisher") {
-        return new Response(
-          JSON.stringify({
-            trustedPublisher,
-          }),
-          { status: 200 },
-        );
-      }
-      if (pathname.endsWith("/publication")) {
-        return new Response(null, { status: 404 });
-      }
-      if (pathname === "/api/v1/packages/%40openclaw%2Fdemo-plugin/versions/2026.4.1") {
+    const fetchImpl = availablePackageFetch((pathname) => {
+      if (pathname === `${packagePath}/versions/2026.4.1`) {
         versionRequests += 1;
         if (versionRequests === 1) {
           throw new TypeError("fetch failed");
         }
         return new Response("", { status: 404 });
       }
-      throw new Error(`Unexpected ClawHub request to ${pathname}`);
-    };
+      return undefined;
+    });
 
     const plan = await collectPluginClawHubReleasePlan({
-      rootDir: repoDir,
-      selection: ["@openclaw/demo-plugin"],
-      fetchImpl,
-      registryBaseUrl: "https://clawhub.ai",
+      ...planOptions(repoDir, fetchImpl),
       sleep: async (ms) => {
         retryDelays.push(ms);
       },
@@ -327,40 +332,19 @@ describe("collectPluginClawHubReleasePlan", () => {
     const repoDir = createTempPluginRepo();
     let trustedPublisherRequests = 0;
     const retryDelays: number[] = [];
-    const fetchImpl: typeof fetch = async (input) => {
-      const requestUrl =
-        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      const pathname = new URL(requestUrl).pathname;
-      if (pathname === "/api/v1/packages/%40openclaw%2Fdemo-plugin") {
-        return new Response("{}", { status: 200 });
-      }
-      if (pathname === "/api/v1/packages/%40openclaw%2Fdemo-plugin/trusted-publisher") {
+    const fetchImpl = availablePackageFetch((pathname) => {
+      if (pathname === `${packagePath}/trusted-publisher`) {
         trustedPublisherRequests += 1;
         if (trustedPublisherRequests === 1) {
           return new Response("", { status: 429, headers: { "retry-after": "999999999999" } });
         }
-        return new Response(
-          JSON.stringify({
-            trustedPublisher,
-          }),
-          { status: 200 },
-        );
       }
-      if (pathname.endsWith("/publication")) {
-        return new Response(null, { status: 404 });
-      }
-      if (pathname === "/api/v1/packages/%40openclaw%2Fdemo-plugin/versions/2026.4.1") {
-        return new Response("", { status: 404 });
-      }
-      throw new Error(`Unexpected ClawHub request to ${pathname}`);
-    };
+      return undefined;
+    });
 
     await expect(
       collectPluginClawHubReleasePlan({
-        rootDir: repoDir,
-        selection: ["@openclaw/demo-plugin"],
-        fetchImpl,
-        registryBaseUrl: "https://clawhub.ai",
+        ...planOptions(repoDir, fetchImpl),
         sleep: async (ms) => {
           retryDelays.push(ms);
         },
@@ -373,25 +357,19 @@ describe("collectPluginClawHubReleasePlan", () => {
 
   it("keeps ClawHub trusted publisher timeouts active while reading response bodies", async () => {
     const repoDir = createTempPluginRepo();
-    const fetchImpl: typeof fetch = async (input) => {
-      const requestUrl =
-        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      const url = new URL(requestUrl);
-      if (url.pathname === "/api/v1/packages/%40openclaw%2Fdemo-plugin") {
-        return new Response("{}", { status: 200 });
-      }
-      if (url.pathname === "/api/v1/packages/%40openclaw%2Fdemo-plugin/trusted-publisher") {
+    const fetchImpl = availablePackageFetch((pathname) => {
+      if (pathname === `${packagePath}/trusted-publisher`) {
         return new Response(new ReadableStream<Uint8Array>({ start() {} }), { status: 200 });
       }
-      throw new Error(`Unexpected ClawHub request to ${url.pathname}`);
-    };
+      if (pathname === packagePath) {
+        return undefined;
+      }
+      throw new Error(`Unexpected ClawHub request to ${pathname}`);
+    });
 
     await expect(
       collectPluginClawHubReleasePlan({
-        rootDir: repoDir,
-        selection: ["@openclaw/demo-plugin"],
-        fetchImpl,
-        registryBaseUrl: "https://clawhub.ai",
+        ...planOptions(repoDir, fetchImpl),
         requestTimeoutMs: 5,
       }),
     ).rejects.toThrow("ClawHub request timed out after 5ms");
@@ -401,21 +379,14 @@ describe("collectPluginClawHubReleasePlan", () => {
     const repoDir = createTempPluginRepo();
     const { fetchImpl } = createClawHubPlanFetch({
       packages: {
-        "@openclaw/demo-plugin": {
-          status: 200,
-          body: {
-            package: {},
-            owner: {},
-          },
-        },
+        "@openclaw/demo-plugin": { status: 200, body: { package: {}, owner: {} } },
       },
       trustedPublishers: {
         "@openclaw/demo-plugin": {
           status: 200,
           body: {
             trustedPublisher: {
-              repository: "openclaw/openclaw",
-              workflowFilename: "plugin-clawhub-release.yml",
+              ...trustedPublisher,
               environment: "clawhub-plugin-release",
             },
           },
@@ -427,10 +398,7 @@ describe("collectPluginClawHubReleasePlan", () => {
     });
 
     const plan = await collectPluginClawHubReleasePlan({
-      rootDir: repoDir,
-      selection: ["@openclaw/demo-plugin"],
-      fetchImpl,
-      registryBaseUrl: "https://clawhub.ai",
+      ...planOptions(repoDir, fetchImpl),
     });
 
     expect(plan.candidates).toStrictEqual([]);
@@ -449,37 +417,13 @@ describe("buildOpenClawReleaseClawHubPlan", () => {
     });
     const { fetchImpl } = createClawHubPlanFetch({
       packages: {
-        "@openclaw/demo-plugin": {
-          status: 200,
-          body: {
-            package: {},
-            owner: {},
-          },
-        },
-        "@openclaw/demo-two": {
-          status: 404,
-        },
-        "@openclaw/demo-three": {
-          status: 200,
-          body: {
-            package: {},
-            owner: {},
-          },
-        },
+        "@openclaw/demo-plugin": { status: 200, body: { package: {}, owner: {} } },
+        "@openclaw/demo-two": { status: 404 },
+        "@openclaw/demo-three": { status: 200, body: { package: {}, owner: {} } },
       },
       trustedPublishers: {
-        "@openclaw/demo-plugin": {
-          status: 200,
-          body: {
-            trustedPublisher,
-          },
-        },
-        "@openclaw/demo-three": {
-          status: 200,
-          body: {
-            trustedPublisher: null,
-          },
-        },
+        "@openclaw/demo-plugin": publishedPackage,
+        "@openclaw/demo-three": { status: 200, body: { trustedPublisher: null } },
       },
       versions: {
         "@openclaw/demo-plugin@2026.4.1": 404,
@@ -516,9 +460,11 @@ describe("buildOpenClawReleaseClawHubPlan", () => {
           `@openclaw/${id}@2026.4.1: demo-runtime pinned "1.2.3", npm latest is "1.2.4". Freshness is advisory; retain the release-validated pin.`,
       ),
     );
-    expect(plan.clawHubWorkflowRef).toBe(`release-publish/${"d".repeat(12)}-12345`);
-    expect(plan.bootstrapWorkflowSha).toBe("d".repeat(40));
-    expect(plan.releasePublishBranch).toBe("main");
+    expect(plan).toMatchObject({
+      clawHubWorkflowRef: `release-publish/${"d".repeat(12)}-12345`,
+      bootstrapWorkflowSha: "d".repeat(40),
+      releasePublishBranch: "main",
+    });
     expect(plan.normal).toEqual({
       workflow: "plugin-clawhub-release.yml",
       ref: `release-publish/${"d".repeat(12)}-12345`,
@@ -621,23 +567,11 @@ describe("plugin-clawhub-publish.sh", () => {
     const markerPath = join(repoDir, "clawhub-invoked");
     writeClawHubPackStub(binDir, markerPath);
 
-    execFileSync(
-      "bash",
-      [
-        join(process.cwd(), "scripts/plugin-clawhub-publish.sh"),
-        "--dry-run",
-        "extensions/demo-plugin",
-      ],
-      {
-        cwd: repoDir,
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          OPENCLAW_CLAWHUB_PACKAGE_FAMILY: "bundle-plugin",
-          PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
-        },
-      },
-    );
+    execFileSync("bash", publishArgs("--dry-run"), {
+      cwd: repoDir,
+      encoding: "utf8",
+      env: publishEnv(repoDir, { OPENCLAW_CLAWHUB_PACKAGE_FAMILY: "bundle-plugin" }),
+    });
 
     expect(readFileSync(markerPath, "utf8")).toContain("--family bundle-plugin");
   });
@@ -661,15 +595,11 @@ describe("plugin-clawhub-publish.sh", () => {
   it.each(["./clawhub"])("rejects relative ClawHub CLI override %s", (cli) => {
     const repoDir = createTempPluginRepo();
     writeFileSync(join(repoDir, "clawhub"), "#!/bin/sh\nexit 97\n", { mode: 0o755 });
-    const result = spawnSync(
-      "bash",
-      [
-        join(process.cwd(), "scripts/plugin-clawhub-publish.sh"),
-        "--pack",
-        "extensions/demo-plugin",
-      ],
-      { cwd: repoDir, encoding: "utf8", env: { ...process.env, OPENCLAW_CLAWHUB_CLI: cli } },
-    );
+    const result = spawnSync("bash", publishArgs("--pack"), {
+      cwd: repoDir,
+      encoding: "utf8",
+      env: { ...process.env, OPENCLAW_CLAWHUB_CLI: cli },
+    });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("OPENCLAW_CLAWHUB_CLI must be an absolute executable path");
   });
@@ -681,23 +611,11 @@ describe("plugin-clawhub-publish.sh", () => {
     const outputDir = join(repoDir, "clawhub-artifacts");
     writeClawHubPackStub(binDir, markerPath);
 
-    const output = execFileSync(
-      "bash",
-      [
-        join(process.cwd(), "scripts/plugin-clawhub-publish.sh"),
-        "--pack",
-        "extensions/demo-plugin",
-      ],
-      {
-        cwd: repoDir,
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          OPENCLAW_CLAWHUB_PACK_OUTPUT_DIR: outputDir,
-          PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
-        },
-      },
-    );
+    const output = execFileSync("bash", publishArgs("--pack"), {
+      cwd: repoDir,
+      encoding: "utf8",
+      env: publishEnv(repoDir, { OPENCLAW_CLAWHUB_PACK_OUTPUT_DIR: outputDir }),
+    });
 
     expect(output).toContain("Packed ClawPack:");
     expect(existsSync(join(outputDir, "openclaw-demo-plugin-2026.4.1.tgz"))).toBe(true);
@@ -727,23 +645,17 @@ exit 99
     chmodSync(join(binDir, "clawhub"), 0o755);
 
     expect(() =>
-      execFileSync(
-        "bash",
-        [join(process.cwd(), "scripts/plugin-clawhub-publish.sh"), "--validate-packed", tgzPath],
-        {
-          cwd: repoDir,
-          encoding: "utf8",
-          env: {
-            ...process.env,
-            EXPECTED_CLAWHUB_ARTIFACT_SHA256: createHash("sha256").update(tgzBytes).digest("hex"),
-            EXPECTED_CLAWHUB_ARTIFACT_SIZE: String(tgzBytes.byteLength),
-            EXPECTED_CLAWHUB_PACKAGE_NAME: "@openclaw/demo-plugin",
-            EXPECTED_CLAWHUB_PACKAGE_VERSION: "2026.4.1",
-            PACKAGE_DIR: "extensions/demo-plugin",
-            PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
-          },
-        },
-      ),
+      execFileSync("bash", publishArgs("--validate-packed", tgzPath), {
+        cwd: repoDir,
+        encoding: "utf8",
+        env: publishEnv(repoDir, {
+          EXPECTED_CLAWHUB_ARTIFACT_SHA256: createHash("sha256").update(tgzBytes).digest("hex"),
+          EXPECTED_CLAWHUB_ARTIFACT_SIZE: String(tgzBytes.byteLength),
+          EXPECTED_CLAWHUB_PACKAGE_NAME: "@openclaw/demo-plugin",
+          EXPECTED_CLAWHUB_PACKAGE_VERSION: "2026.4.1",
+          PACKAGE_DIR: "extensions/demo-plugin",
+        }),
+      }),
     ).toThrow("Duplicate or aliased plugin tar entry: package/package.json");
     expect(existsSync(markerPath)).toBe(false);
   });
@@ -825,16 +737,14 @@ fi
 
     const result = spawnSync(
       "bash",
-      [
-        join(process.cwd(), "scripts/plugin-clawhub-publish.sh"),
+      publishArgs(
         sourceMode ? "--publish" : "--publish-packed",
         sourceMode ? "extensions/demo-plugin" : tgzPath,
-      ],
+      ),
       {
         cwd: repoDir,
         encoding: "utf8",
-        env: {
-          ...process.env,
+        env: publishEnv(repoDir, {
           EXPECTED_CLAWHUB_ARTIFACT_SHA256: createHash("sha256").update(tgzBytes).digest("hex"),
           EXPECTED_CLAWHUB_ARTIFACT_SIZE: String(tgzBytes.byteLength),
           EXPECTED_CLAWHUB_PACKAGE_NAME: "@openclaw/demo-plugin",
@@ -843,7 +753,6 @@ fi
           OPENCLAW_CLAWHUB_PUBLISH_RETRY_DELAY_SECONDS: "60",
           OPENCLAW_PLUGIN_NPM_RUNTIME_BUILD: "0",
           PACKAGE_DIR: "extensions/demo-plugin",
-          PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
           TEST_ATTEMPTS: attemptsPath,
           TEST_INVOCATIONS: markerPath,
           TEST_SLEEPS: sleepsPath,
@@ -852,7 +761,7 @@ fi
           TEST_MUTATE: String(mutate ?? false),
           TEST_ERROR: error,
           TEST_EXIT_CODE: "1",
-        },
+        }),
       },
     );
 
@@ -973,84 +882,46 @@ function createTempPluginRepo(
   return repoDir;
 }
 
+type RegistryReply = { status: number; body?: unknown };
 function createClawHubPlanFetch(config: {
-  packages: Record<
-    string,
-    {
-      status: number;
-      body?: unknown;
-    }
-  >;
-  trustedPublishers?: Record<
-    string,
-    {
-      status: number;
-      body?: unknown;
-    }
-  >;
+  packages: Record<string, RegistryReply>;
+  trustedPublishers?: Record<string, RegistryReply>;
   versions?: Record<string, number>;
-  publications?: Record<string, { status: number; body?: unknown }>;
+  publications?: Record<string, RegistryReply>;
 }) {
   const requests: string[] = [];
+  const reply = (value: RegistryReply | undefined, resource: string) => {
+    if (!value) {
+      throw new Error(`Unexpected ${resource} request`);
+    }
+    return new Response(JSON.stringify(value.body ?? {}), { status: value.status });
+  };
   const fetchImpl: typeof fetch = async (input) => {
     const requestUrl =
       typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const url = new URL(requestUrl);
     requests.push(url.pathname);
 
-    const packageMatch = url.pathname.match(/^\/api\/v1\/packages\/([^/]+)$/u);
-    const encodedPackageName = packageMatch?.[1];
-    if (encodedPackageName !== undefined) {
-      const packageName = decodeURIComponent(encodedPackageName);
-      const packageResponse = config.packages[packageName];
-      if (!packageResponse) {
-        throw new Error(`Unexpected package detail request for ${packageName}`);
-      }
-      return new Response(JSON.stringify(packageResponse.body ?? {}), {
-        status: packageResponse.status,
-      });
-    }
-
-    const trustedPublisherMatch = url.pathname.match(
-      /^\/api\/v1\/packages\/([^/]+)\/trusted-publisher$/u,
+    const match = url.pathname.match(
+      /^\/api\/v1\/packages\/([^/]+)(?:\/(trusted-publisher)|\/versions\/([^/]+)(\/publication)?)?$/u,
     );
-    const encodedTrustedPublisherPackageName = trustedPublisherMatch?.[1];
-    if (encodedTrustedPublisherPackageName !== undefined) {
-      const packageName = decodeURIComponent(encodedTrustedPublisherPackageName);
-      const trustedPublisherResponse = config.trustedPublishers?.[packageName];
-      if (!trustedPublisherResponse) {
-        throw new Error(`Unexpected trusted-publisher request for ${packageName}`);
+    if (!match?.[1]) {
+      throw new Error(`Unexpected ClawHub request to ${url.pathname}`);
+    }
+    const name = decodeURIComponent(match[1]);
+    if (match[2]) {
+      return reply(config.trustedPublishers?.[name], `trusted-publisher for ${name}`);
+    }
+    if (match[3]) {
+      const key = `${name}@${decodeURIComponent(match[3])}`;
+      if (match[4]) {
+        return reply(config.publications?.[key] ?? { status: 404 }, key);
       }
-      return new Response(JSON.stringify(trustedPublisherResponse.body ?? {}), {
-        status: trustedPublisherResponse.status,
-      });
-    }
-
-    const publicationMatch = url.pathname.match(
-      /^\/api\/v1\/packages\/([^/]+)\/versions\/([^/]+)\/publication$/u,
-    );
-    if (publicationMatch?.[1] && publicationMatch[2]) {
-      const key = `${decodeURIComponent(publicationMatch[1])}@${decodeURIComponent(publicationMatch[2])}`;
-      const reply = config.publications?.[key] ?? { status: 404 };
-      return new Response(JSON.stringify(reply.body ?? {}), { status: reply.status });
-    }
-
-    const versionMatch = url.pathname.match(/^\/api\/v1\/packages\/([^/]+)\/versions\/([^/]+)$/u);
-    const encodedVersionPackageName = versionMatch?.[1];
-    const encodedVersion = versionMatch?.[2];
-    if (encodedVersionPackageName !== undefined && encodedVersion !== undefined) {
-      const packageName = decodeURIComponent(encodedVersionPackageName);
-      const version = decodeURIComponent(encodedVersion);
       const status =
-        config.versions?.[`${packageName}@${version}`] ??
-        (config.packages[packageName]?.status === 404 ? 404 : undefined);
-      if (!status) {
-        throw new Error(`Unexpected version detail request for ${packageName}@${version}`);
-      }
-      return new Response("{}", { status });
+        config.versions?.[key] ?? (config.packages[name]?.status === 404 ? 404 : undefined);
+      return reply(status ? { status } : undefined, `version detail for ${key}`);
     }
-
-    throw new Error(`Unexpected ClawHub request to ${url.pathname}`);
+    return reply(config.packages[name], `package detail for ${name}`);
   };
 
   return { fetchImpl, requests };

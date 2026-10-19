@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -14,7 +14,7 @@ import { acquireGatewayE2ePortBlock } from "../src/gateway/test-helpers.listener
 import { upsertSessionEntry } from "../src/plugin-sdk/session-store-runtime.js";
 import { closeOpenClawAgentDatabasesForTest } from "../src/plugin-sdk/sqlite-runtime-testing.js";
 import type { TestPortClaim } from "../src/test-utils/port-claims.js";
-import { writeOpenAiResponsesSse } from "./helpers/openai-responses-sse.js";
+import { writeOpenAiResponsesText } from "./helpers/openai-responses-sse.js";
 import {
   createOpenClawTestInstance,
   type OpenClawTestInstance,
@@ -95,51 +95,6 @@ async function readJsonRequest(req: IncomingMessage): Promise<Record<string, unk
   return body ? (JSON.parse(body) as Record<string, unknown>) : {};
 }
 
-function writeModelResponse(res: ServerResponse, sequence: number): void {
-  const messageId = `msg_cron_owner_${sequence}`;
-  const responseId = `resp_cron_owner_${sequence}`;
-  const text = `CRON_OWNER_RESPONSE_${sequence}`;
-  const message = {
-    type: "message",
-    id: messageId,
-    role: "assistant",
-    status: "completed",
-    content: [{ type: "output_text", text, annotations: [] }],
-  };
-  const events = [
-    {
-      type: "response.output_item.added",
-      output_index: 0,
-      item: { ...message, status: "in_progress", content: [] },
-    },
-    {
-      type: "response.output_text.delta",
-      item_id: messageId,
-      output_index: 0,
-      content_index: 0,
-      delta: text,
-    },
-    {
-      type: "response.output_text.done",
-      item_id: messageId,
-      output_index: 0,
-      content_index: 0,
-      text,
-    },
-    { type: "response.output_item.done", output_index: 0, item: message },
-    {
-      type: "response.completed",
-      response: {
-        id: responseId,
-        status: "completed",
-        output: [message],
-        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
-      },
-    },
-  ];
-  writeOpenAiResponsesSse(res, events);
-}
-
 async function startMockModelServer(rejectModel?: string): Promise<MockModelServer> {
   const requests: MockModelRequest[] = [];
   const server = createServer((req, res) => {
@@ -162,7 +117,11 @@ async function startMockModelServer(rejectModel?: string): Promise<MockModelServ
         res.end(JSON.stringify({ error: { code: "model_not_found", message: "Model not found" } }));
         return;
       }
-      writeModelResponse(res, requests.length);
+      writeOpenAiResponsesText(res, {
+        messageId: `msg_cron_owner_${requests.length}`,
+        responseId: `resp_cron_owner_${requests.length}`,
+        text: `CRON_OWNER_RESPONSE_${requests.length}`,
+      });
     })();
   });
   await new Promise<void>((resolve, reject) => {
@@ -277,6 +236,59 @@ async function listCronJobs(client: {
   return page.jobs;
 }
 
+function model(id: string) {
+  return {
+    id,
+    name: id,
+    reasoning: false,
+    input: ["text"] as ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128_000,
+    maxTokens: 4_096,
+  };
+}
+
+function providerConfig(server: MockModelServer, ids: string[], auth: boolean) {
+  return {
+    baseUrl: `${server.baseUrl}/v1`,
+    api: "openai-responses" as const,
+    auth: auth ? ("api-key" as const) : undefined,
+    apiKey: auth ? TEST_API_KEY : undefined,
+    request: { allowPrivateNetwork: true },
+    models: ids.map(model),
+  };
+}
+
+async function createInstance(
+  name: string,
+  bundledRoot: string,
+  config: OpenClawConfig,
+  port?: number,
+) {
+  const instance = await createOpenClawTestInstance({
+    name,
+    port,
+    config,
+    env: {
+      OPENCLAW_BUNDLED_PLUGINS_DIR: bundledRoot,
+      OPENCLAW_TEST_TRUST_BUNDLED_PLUGINS_DIR: "1",
+      OPENCLAW_DISABLE_BUNDLED_PLUGINS: undefined,
+      OPENCLAW_SKIP_CRON: undefined,
+      OPENCLAW_SKIP_PROVIDERS: undefined,
+      OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
+    },
+  });
+  instances.push(instance);
+  return instance;
+}
+
+function expectMainWorkspace(requests: MockModelRequest[]) {
+  for (const request of requests) {
+    expect(requestText(request)).toContain(MAIN_WORKSPACE_MARKER);
+    expect(requestText(request)).not.toContain(WORKER_WORKSPACE_MARKER);
+  }
+}
+
 describe("plugin cron registry ownership e2e", () => {
   it.each(["cron", "subagent"] as const)(
     "prepares distinct selected and fallback providers for %s under per-agent defaults",
@@ -315,15 +327,6 @@ describe("plugin cron registry ownership e2e", () => {
       }
       const server = await startMockModelServer("unavailable");
       modelServers.push(server);
-      const model = (id: string) => ({
-        id,
-        name: id,
-        reasoning: false,
-        input: ["text"] as ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 128_000,
-        maxTokens: 4_096,
-      });
       const config: OpenClawConfig = {
         plugins: {
           entries: Object.fromEntries(pluginIds.map((id) => [id, { enabled: true }])),
@@ -352,45 +355,16 @@ describe("plugin cron registry ownership e2e", () => {
           mode: "replace",
           providers: {
             "cron-owner": {
-              baseUrl: `${server.baseUrl}/v1`,
-              api: "openai-responses",
+              ...providerConfig(server, ["default", "agent-default"], false),
               apiKey: TEST_API_KEY,
-              request: { allowPrivateNetwork: true },
-              models: [model("default"), model("agent-default")],
             },
-            [provider]: {
-              baseUrl: `${server.baseUrl}/v1`,
-              api: "openai-responses",
-              // Cron admission needs explicit key auth before the provider runtime loads.
-              auth: route === "cron" ? "api-key" : undefined,
-              apiKey: route === "cron" ? TEST_API_KEY : undefined,
-              request: { allowPrivateNetwork: true },
-              models: [model("unavailable")],
-            },
-            [fallbackProvider]: {
-              baseUrl: `${server.baseUrl}/v1`,
-              api: "openai-responses",
-              auth: route === "cron" ? "api-key" : undefined,
-              apiKey: route === "cron" ? TEST_API_KEY : undefined,
-              request: { allowPrivateNetwork: true },
-              models: [model("available")],
-            },
+            // Cron admission needs explicit key auth before the provider runtime loads.
+            [provider]: providerConfig(server, ["unavailable"], route === "cron"),
+            [fallbackProvider]: providerConfig(server, ["available"], route === "cron"),
           },
         },
       };
-      const instance = await createOpenClawTestInstance({
-        name: "cron-selected-provider",
-        config,
-        env: {
-          OPENCLAW_BUNDLED_PLUGINS_DIR: bundledRoot,
-          OPENCLAW_TEST_TRUST_BUNDLED_PLUGINS_DIR: "1",
-          OPENCLAW_DISABLE_BUNDLED_PLUGINS: undefined,
-          OPENCLAW_SKIP_CRON: undefined,
-          OPENCLAW_SKIP_PROVIDERS: undefined,
-          OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
-        },
-      });
-      instances.push(instance);
+      const instance = await createInstance("cron-selected-provider", bundledRoot, config);
       const sessionKey = "agent:main:subagent:provider-fallback";
       if (route === "subagent") {
         instance.state.applyEnv();
@@ -543,42 +517,21 @@ describe("plugin cron registry ownership e2e", () => {
           mode: "replace",
           providers: {
             "cron-owner": {
-              baseUrl: `${modelServer.baseUrl}/v1`,
+              ...providerConfig(modelServer, [], false),
               apiKey: TEST_API_KEY,
-              api: "openai-responses",
-              request: { allowPrivateNetwork: true },
-              models: [
-                {
-                  id: "cron-owner",
-                  name: "cron-owner",
-                  api: "openai-responses",
-                  reasoning: false,
-                  input: ["text"],
-                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                  contextWindow: 128_000,
-                  maxTokens: 4_096,
-                },
-              ],
+              models: [{ ...model("cron-owner"), api: "openai-responses" }],
             },
           },
         },
       } satisfies OpenClawConfig;
       const claim = await acquireGatewayE2ePortBlock();
       portClaims.push(claim);
-      const instance = await createOpenClawTestInstance({
-        name: "plugin-cron-registry-owner",
-        port: claim.port,
+      const instance = await createInstance(
+        "plugin-cron-registry-owner",
+        bundledRoot,
         config,
-        env: {
-          OPENCLAW_BUNDLED_PLUGINS_DIR: bundledRoot,
-          OPENCLAW_TEST_TRUST_BUNDLED_PLUGINS_DIR: "1",
-          OPENCLAW_DISABLE_BUNDLED_PLUGINS: undefined,
-          OPENCLAW_SKIP_CRON: undefined,
-          OPENCLAW_SKIP_PROVIDERS: undefined,
-          OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
-        },
-      });
-      instances.push(instance);
+        claim.port,
+      );
       await instance.startGateway();
       expect(instance.port).toBe(claim.port);
 
@@ -590,6 +543,43 @@ describe("plugin cron registry ownership e2e", () => {
         requestTimeoutMs: 30_000,
       });
       const scheduledIds: string[] = [];
+      const schedule = async (name: string, message: string) => {
+        const sessionKey = `agent:main:cron-${name}`;
+        const result = await client.request<ScheduleResult>(SCHEDULE_METHOD, {
+          name,
+          message,
+          sessionKey,
+        });
+        const id = requireHandle(result, { pluginId: PLUGIN_ID, sessionKey, kind: "session-turn" });
+        scheduledIds.push(id);
+        return id;
+      };
+      const activate = async (agent: string, message: string) => {
+        const count = requestsContaining(modelServer, message).length;
+        await client.request("chat.send", {
+          sessionKey: `agent:${agent}:registry-churn`,
+          message,
+          deliver: false,
+          idempotencyKey: randomUUID(),
+        });
+        await waitForRequestCount(modelServer, message, count + 1);
+      };
+      const expectRecurringRuns = async (count: number) => {
+        const baselines = [OWNER_FIRE, PINNED_FIRE].map((marker) => ({
+          marker,
+          count: requestsContaining(modelServer, marker).length,
+        }));
+        await Promise.all(
+          baselines.map((entry) =>
+            waitForRequestCount(modelServer, entry.marker, entry.count + count),
+          ),
+        );
+        expectMainWorkspace(
+          baselines.flatMap((entry) =>
+            requestsContaining(modelServer, entry.marker).slice(entry.count),
+          ),
+        );
+      };
       try {
         const cronStatus = await client.request<{
           enabled: boolean;
@@ -601,91 +591,32 @@ describe("plugin cron registry ownership e2e", () => {
           path.join(instance.stateDir, "state", "openclaw.sqlite"),
         );
 
-        const ownerResult = await client.request<ScheduleResult>(SCHEDULE_METHOD, {
-          name: "owner-survival",
-          message: OWNER_FIRE,
-          sessionKey: "agent:main:cron-owner-survival",
-        });
-        const ownerId = requireHandle(ownerResult, {
-          pluginId: PLUGIN_ID,
-          sessionKey: "agent:main:cron-owner-survival",
-          kind: "session-turn",
-        });
-        scheduledIds.push(ownerId);
-
-        await client.request("chat.send", {
-          sessionKey: "agent:worker:registry-churn",
-          message: "ACTIVATE_WORKER_REGISTRY",
-          deliver: false,
-          idempotencyKey: randomUUID(),
-        });
-        await waitForRequestCount(modelServer, "ACTIVATE_WORKER_REGISTRY", 1);
+        const ownerId = await schedule("owner-survival", OWNER_FIRE);
+        await activate("worker", "ACTIVATE_WORKER_REGISTRY");
 
         // The attached Gateway handler still closes over the pinned startup registry API.
         // Scheduling here proves non-active pinned registries remain live during workspace churn.
-        const pinnedResult = await client.request<ScheduleResult>(SCHEDULE_METHOD, {
-          name: "pinned-late",
-          message: PINNED_FIRE,
-          sessionKey: "agent:main:cron-pinned-late",
-        });
-        const pinnedId = requireHandle(pinnedResult, {
-          pluginId: PLUGIN_ID,
-          sessionKey: "agent:main:cron-pinned-late",
-          kind: "session-turn",
-        });
-        scheduledIds.push(pinnedId);
-
-        const ownerWorkerActiveBaseline = requestsContaining(modelServer, OWNER_FIRE).length;
-        const pinnedWorkerActiveBaseline = requestsContaining(modelServer, PINNED_FIRE).length;
-        await Promise.all([
-          waitForRequestCount(modelServer, OWNER_FIRE, ownerWorkerActiveBaseline + 1),
-          waitForRequestCount(modelServer, PINNED_FIRE, pinnedWorkerActiveBaseline + 1),
-        ]);
-        for (const request of [
-          ...requestsContaining(modelServer, OWNER_FIRE).slice(ownerWorkerActiveBaseline),
-          ...requestsContaining(modelServer, PINNED_FIRE).slice(pinnedWorkerActiveBaseline),
-        ]) {
-          expect(requestText(request)).toContain(MAIN_WORKSPACE_MARKER);
-          expect(requestText(request)).not.toContain(WORKER_WORKSPACE_MARKER);
-        }
-
-        const mainReactivationBaseline = requestsContaining(
-          modelServer,
-          "REACTIVATE_MAIN_REGISTRY",
-        ).length;
-        await client.request("chat.send", {
-          sessionKey: "agent:main:registry-churn",
-          message: "REACTIVATE_MAIN_REGISTRY",
-          deliver: false,
-          idempotencyKey: randomUUID(),
-        });
-        await waitForRequestCount(
-          modelServer,
-          "REACTIVATE_MAIN_REGISTRY",
-          mainReactivationBaseline + 1,
-        );
+        const pinnedId = await schedule("pinned-late", PINNED_FIRE);
+        await expectRecurringRuns(1);
+        await activate("main", "REACTIVATE_MAIN_REGISTRY");
 
         const expectedIds = [ownerId, pinnedId].toSorted();
         const afterChurn = (await listCronJobs(client))
           .filter((job) => expectedIds.includes(job.id))
           .toSorted((a, b) => a.id.localeCompare(b.id));
         expect(afterChurn.map((job) => job.id)).toEqual(expectedIds);
+        const expectedJob = (id: string, session: string) =>
+          expect.objectContaining({
+            id,
+            enabled: true,
+            deleteAfterRun: false,
+            sessionTarget: `session:agent:main:${session}`,
+            schedule: { kind: "cron", expr: CRON_EXPRESSION, tz: "UTC" },
+          });
         expect(afterChurn).toEqual(
           expect.arrayContaining([
-            expect.objectContaining({
-              id: ownerId,
-              enabled: true,
-              deleteAfterRun: false,
-              sessionTarget: "session:agent:main:cron-owner-survival",
-              schedule: { kind: "cron", expr: CRON_EXPRESSION, tz: "UTC" },
-            }),
-            expect.objectContaining({
-              id: pinnedId,
-              enabled: true,
-              deleteAfterRun: false,
-              sessionTarget: "session:agent:main:cron-pinned-late",
-              schedule: { kind: "cron", expr: CRON_EXPRESSION, tz: "UTC" },
-            }),
+            expectedJob(ownerId, "cron-owner-survival"),
+            expectedJob(pinnedId, "cron-pinned-late"),
           ]),
         );
         const nextRunAtChurn = new Map(
@@ -693,20 +624,7 @@ describe("plugin cron registry ownership e2e", () => {
         );
         expect([...nextRunAtChurn.values()]).toEqual([expect.any(Number), expect.any(Number)]);
 
-        const ownerBaseline = requestsContaining(modelServer, OWNER_FIRE).length;
-        const pinnedBaseline = requestsContaining(modelServer, PINNED_FIRE).length;
-        await Promise.all([
-          waitForRequestCount(modelServer, OWNER_FIRE, ownerBaseline + 2),
-          waitForRequestCount(modelServer, PINNED_FIRE, pinnedBaseline + 2),
-        ]);
-
-        for (const request of [
-          ...requestsContaining(modelServer, OWNER_FIRE).slice(ownerBaseline),
-          ...requestsContaining(modelServer, PINNED_FIRE).slice(pinnedBaseline),
-        ]) {
-          expect(requestText(request)).toContain(MAIN_WORKSPACE_MARKER);
-          expect(requestText(request)).not.toContain(WORKER_WORKSPACE_MARKER);
-        }
+        await expectRecurringRuns(2);
 
         const afterRecurringRuns = (await listCronJobs(client)).filter((job) =>
           expectedIds.includes(job.id),
