@@ -54,19 +54,9 @@ export async function takeControlUiViewportScreenshot(
 }
 
 async function captureControlUiViewport(page: Page): Promise<Buffer> {
-  // CDP repaints the current viewport but does not settle semantic presentation.
-  // Keep capture independent of unrelated dashboard RPCs and descendant motion.
-  const session = await page.context().newCDPSession(page);
-  try {
-    const result = await session.send("Page.captureScreenshot", {
-      captureBeyondViewport: false,
-      format: "png",
-      fromSurface: true,
-    });
-    return Buffer.from(result.data, "base64");
-  } finally {
-    await session.detach();
-  }
+  // Playwright owns the viewport emulation and device scale used by this page.
+  // Keep the presentation prepared by the caller, including hover and caret state.
+  return page.screenshot({ type: "png", animations: "allow", caret: "initial" });
 }
 
 export async function takeControlUiElementScreenshot(
@@ -530,13 +520,17 @@ async function captureControlUiFrame(
     const scaleY = image.get_height() / viewport.height;
     expect(scaleX, "Proof frame horizontal scale").toBeGreaterThan(0);
     expect(scaleY, "Proof frame vertical scale").toBeGreaterThan(0);
+    expect(
+      Math.abs(image.get_height() - viewport.height * scaleX),
+      "Proof frame must preserve the viewport aspect ratio",
+    ).toBeLessThanOrEqual(1);
     return {
       png,
       elements: rectangles.map((rect) => {
         const x = Math.floor(rect.x * scaleX);
         const y = Math.floor(rect.y * scaleY);
-        const right = Math.ceil((rect.x + rect.width) * scaleX);
-        const bottom = Math.ceil((rect.y + rect.height) * scaleY);
+        const right = Math.min(image.get_width(), Math.ceil((rect.x + rect.width) * scaleX));
+        const bottom = Math.min(image.get_height(), Math.ceil((rect.y + rect.height) * scaleY));
         const crop = photon.crop(image, x, y, right, bottom);
         try {
           expect([crop.get_width(), crop.get_height()]).toEqual([right - x, bottom - y]);

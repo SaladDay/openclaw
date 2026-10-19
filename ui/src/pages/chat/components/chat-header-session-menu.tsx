@@ -8,6 +8,7 @@ import {
   merge,
   onCleanup,
   onSettled,
+  untrack,
 } from "solid-js";
 import type { UiSettings } from "../../../app/settings.ts";
 import { BoardGrantedCapabilities } from "../../../components/board/board-widget-capabilities.solid.tsx";
@@ -150,7 +151,7 @@ function ChatHeaderSessionMenuContent(
   const actions = new SessionMenuActions(
     host,
     readState,
-    (action) => props.onAction(action),
+    (action) => untrack(() => props.onAction(action)),
     close,
     createSessionOwnerMenu(presented, preparation),
   );
@@ -454,6 +455,9 @@ function ChatHeaderSessionMenuContent(
         (candidate) => candidate.id === value.slice("layout:".length),
       );
       if (action && action.kind !== "status" && !action.disabled) {
+        // Restore the pane trigger before an action can remove its menu and pane.
+        event.preventDefault();
+        close();
         void action.onActivate();
       }
       return;
@@ -503,7 +507,7 @@ function ChatHeaderSessionMenuContent(
       value.startsWith("public:")
     ) {
       if (props.sharing) {
-        selectChatSessionSharingItem(props.sharing, value);
+        void selectChatSessionSharingItem(props.sharing, value);
       }
       return;
     }
