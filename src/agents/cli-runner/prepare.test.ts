@@ -190,7 +190,8 @@ vi.mock("../../config/config.js", async () => ({
   resolveGatewayPort: (await import("../../config/paths.js")).resolveGatewayPort,
 }));
 
-vi.mock("../sandbox.js", () => ({
+vi.mock("../sandbox/context.js", async () => ({
+  ...(await vi.importActual<typeof import("../sandbox/context.js")>("../sandbox/context.js")),
   ensureSandboxWorkspaceForSession: ensureSandboxWorkspaceForSessionMock,
 }));
 
@@ -2448,9 +2449,8 @@ describe("prepareCliRunContext", () => {
     );
     expect(second.promptToolNamesHash).not.toBe(first.promptToolNamesHash);
     expect(second.reusableCliSession).toEqual({
-      mode: "reuse-with-drift",
-      sessionId: "cli-session",
-      drift: { reasons: ["prompt-tools"] },
+      mode: "invalidate",
+      invalidatedReason: "prompt-tools",
     });
   });
 
@@ -2675,9 +2675,8 @@ describe("prepareCliRunContext", () => {
       hashCliSessionText(JSON.stringify(["fake_web_tool", "memory_search"])),
     );
     expect(context.reusableCliSession).toEqual({
-      mode: "reuse-with-drift",
-      sessionId: "cli-session",
-      drift: { reasons: ["prompt-tools"] },
+      mode: "invalidate",
+      invalidatedReason: "prompt-tools",
     });
   });
 
