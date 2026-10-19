@@ -23,36 +23,37 @@ function snapshot(preview: string, hasMore = false): SessionsListResult {
 
 const cleanup: Array<() => void> = [];
 
+async function subscribedFixture() {
+  const f = fixture();
+  f.subscribe();
+  await vi.advanceTimersByTimeAsync(0);
+  return f;
+}
+
 function fixture() {
   const requests: Array<{ id: string; params: Record<string, unknown> }> = [];
   const protocol = new GatewayPendingRequests({ createRequestId: () => "roster", nowMs: Date.now });
+  const respond = (id: string, payload: unknown) =>
+    protocol.handleResponse({ type: "res", id, ok: true, payload });
   const client = createTestGatewayClient((method, params, options) =>
     protocol.request(
       {
         send(frame) {
           const request = JSON.parse(frame);
           if (request.method === "sessions.subscribe") {
-            protocol.handleResponse({
-              type: "res",
-              id: request.id,
-              ok: true,
-              payload: { subscribed: true },
-            });
+            respond(request.id, { subscribed: true });
           } else if (request.method === "sessions.list" && request.params.archived === "all") {
             requests.push(request);
           } else if (
             request.method === "sessions.list" ||
             request.method === "sessions.groups.list"
           ) {
-            protocol.handleResponse({
-              type: "res",
-              id: request.id,
-              ok: true,
-              payload:
-                request.method === "sessions.list"
-                  ? { ...snapshot(""), sessions: [], count: 0 }
-                  : { names: [], sectionOrder: [] },
-            });
+            respond(
+              request.id,
+              request.method === "sessions.list"
+                ? { ...snapshot(""), sessions: [], count: 0 }
+                : { names: [], sectionOrder: [] },
+            );
           } else {
             throw new Error(`Unexpected RPC: ${request.method}`);
           }
@@ -63,16 +64,13 @@ function fixture() {
       options,
     ),
   );
-  const source = createApplicationGateway({
+  const source = createApplicationGateway();
+  source.publish({
+    ...source.gateway.snapshot,
     client,
     phase: "connected",
-    hello: null,
-    offlineStable: false,
-    canvasPluginSurfaceUrl: null,
     assistantAgentId: "main",
     sessionKey: "agent:main:main",
-    lastError: null,
-    lastErrorCode: null,
   });
   const sessions = createTestSessionCapability(source.gateway);
   const context = createContext(source.gateway, sessions, {
@@ -103,21 +101,17 @@ function fixture() {
         payload: { agentId: "main", key: "agent:main:new" },
       });
     },
-    respond(index: number, preview: string, hasMore = false, keys = ["agent:main:main"]) {
+    async respond(index: number, preview: string, hasMore = false, keys = ["agent:main:main"]) {
       const request = requests[index];
       if (!request) {
         throw new Error(`Missing roster request ${index}`);
       }
-      protocol.handleResponse({
-        type: "res",
-        id: request.id,
-        ok: true,
-        payload: {
-          ...snapshot(preview, hasMore),
-          count: keys.length,
-          sessions: keys.map((key) => ({ key, kind: "direct", lastMessagePreview: preview })),
-        },
+      respond(request.id, {
+        ...snapshot(preview, hasMore),
+        count: keys.length,
+        sessions: keys.map((key) => ({ key, kind: "direct", lastMessagePreview: preview })),
       });
+      await vi.advanceTimersByTimeAsync(0);
     },
   };
 }
@@ -219,12 +213,9 @@ it.each(["operator.sessions.read", "operator.sessions.write"])(
 it.each(["pending", "settled"] as const)(
   "keeps the %s roster window through recap-only updates",
   async (phase) => {
-    const f = fixture();
-    f.subscribe();
-    await vi.advanceTimersByTimeAsync(0);
+    const f = await subscribedFixture();
     if (phase === "settled") {
-      f.respond(0, "Current activity");
-      await vi.advanceTimersByTimeAsync(0);
+      await f.respond(0, "Current activity");
     }
     f.source.publishEvent({
       type: "event",
@@ -233,16 +224,12 @@ it.each(["pending", "settled"] as const)(
         sessionKey: "agent:main:main",
         agentId: "main",
         reason: "activity-summary",
-        session: {
-          key: "agent:main:main",
-          kind: "direct",
-          lastMessagePreview: "Current activity",
-        },
+        session: snapshot("Current activity").sessions[0],
       },
     });
     await vi.advanceTimersByTimeAsync(250);
     if (phase === "pending") {
-      f.respond(0, "Current activity");
+      await f.respond(0, "Current activity");
     }
     await vi.advanceTimersByTimeAsync(20_000);
     expect(f.requests).toHaveLength(1);
@@ -252,8 +239,7 @@ it.each(["pending", "settled"] as const)(
     f.invalidate();
     await vi.advanceTimersByTimeAsync(5_000);
     expect(f.requests).toHaveLength(2);
-    f.respond(1, "Refreshed membership");
-    await vi.advanceTimersByTimeAsync(0);
+    await f.respond(1, "Refreshed membership");
     expect(f.store.snapshot.cards[0]?.preview).toBe("Refreshed membership");
   },
 );
@@ -272,8 +258,7 @@ it.each([
     await vi.advanceTimersByTimeAsync(0);
     reconcile ??= f.sessions.captureReconcile();
     if (settled) {
-      f.respond(0, "Listed membership");
-      await vi.advanceTimersByTimeAsync(0);
+      await f.respond(0, "Listed membership");
     }
     reconcile({
       ...snapshot("Selected session metadata").sessions[0]!,
@@ -281,13 +266,12 @@ it.each([
       updatedAt: 1,
     });
     if (!settled) {
-      f.respond(0, "Listed membership");
+      await f.respond(0, "Listed membership");
     }
     await vi.advanceTimersByTimeAsync(15_000);
     if (issued === "after") {
       expect(f.requests).toHaveLength(2);
-      f.respond(1, "Listed membership");
-      await vi.advanceTimersByTimeAsync(0);
+      await f.respond(1, "Listed membership");
     }
     const reads = issued === "before" ? 1 : 2;
     expect(f.requests).toHaveLength(reads);
@@ -297,8 +281,7 @@ it.each([
     f.invalidate();
     await vi.advanceTimersByTimeAsync(15_000);
     expect(f.requests).toHaveLength(reads + 1);
-    f.respond(reads, "New membership", false, ["agent:main:main", "agent:main:new"]);
-    await vi.advanceTimersByTimeAsync(0);
+    await f.respond(reads, "New membership", false, ["agent:main:main", "agent:main:new"]);
     expect(f.store.snapshot.result?.sessions.map(({ key }) => key)).toEqual([
       "agent:main:main",
       "agent:main:new",
@@ -307,35 +290,30 @@ it.each([
 );
 
 it("coalesces repeated invalidations behind one correlated roster request", async () => {
-  const f = fixture();
-  f.subscribe();
-  await vi.advanceTimersByTimeAsync(0);
+  const f = await subscribedFixture();
   for (let i = 0; i < 8; i++) {
     f.invalidate();
     await vi.advanceTimersByTimeAsync(1_000);
   }
   expect(f.requests).toHaveLength(1);
-  f.respond(0, "Held window", true);
+  await f.respond(0, "Held window", true);
   await vi.advanceTimersByTimeAsync(15_000);
   expect(f.requests).toHaveLength(2);
   expect(f.requests[1]?.params.offset).toBeUndefined();
-  f.respond(1, "Fresh window");
-  await vi.advanceTimersByTimeAsync(0);
+  await f.respond(1, "Fresh window");
   expect(f.store.snapshot.cards[0]?.preview).toBe("Fresh window");
   expect(f.requests).toHaveLength(2);
 });
 
 it("absorbs a newer debounce when the queued window starts", async () => {
-  const f = fixture();
-  f.subscribe();
-  await vi.advanceTimersByTimeAsync(0);
+  const f = await subscribedFixture();
   f.invalidate();
   await vi.advanceTimersByTimeAsync(5_000);
   f.invalidate();
-  f.respond(0, "Old window", true);
+  await f.respond(0, "Old window", true);
   await vi.advanceTimersByTimeAsync(15_000);
   expect(f.requests).toHaveLength(2);
-  f.respond(1, "Latest window");
+  await f.respond(1, "Latest window");
   await vi.advanceTimersByTimeAsync(5_000);
   expect(f.requests).toHaveLength(2);
   expect(f.store.snapshot.cards[0]?.preview).toBe("Latest window");
@@ -343,19 +321,15 @@ it("absorbs a newer debounce when the queued window starts", async () => {
 });
 
 it("keeps concurrent filter windows separate through out-of-order replies", async () => {
-  const f = fixture();
-  f.subscribe();
-  await vi.advanceTimersByTimeAsync(0);
+  const f = await subscribedFixture();
   for (const involvingMe of [true, false, true]) {
     f.store.setInvolvingMe(involvingMe);
     await vi.advanceTimersByTimeAsync(0);
   }
   expect(f.requests).toHaveLength(2);
   expect(f.requests[1]?.params).toMatchObject({ involvingMe: true, limit: 100, archived: "all" });
-  f.respond(1, "Current filter");
-  await vi.advanceTimersByTimeAsync(0);
-  f.respond(0, "Old filter", true);
-  await vi.advanceTimersByTimeAsync(0);
+  await f.respond(1, "Current filter");
+  await f.respond(0, "Old filter", true);
   expect(f.store.snapshot.cards[0]?.preview).toBe("Current filter");
   expect(f.requests).toHaveLength(2);
 });
@@ -373,13 +347,11 @@ it.each([false, true])(
     }
     await vi.advanceTimersByTimeAsync(0);
     expect(f.requests).toHaveLength(1);
-    f.respond(0, "Retired page", true);
-    await vi.advanceTimersByTimeAsync(0);
+    await f.respond(0, "Retired page", true);
     expect(f.requests).toHaveLength(reattach ? 2 : 1);
     if (reattach) {
       expect(f.requests[1]?.params.offset).toBe(1);
-      f.respond(1, "Remounted page", false, ["agent:main:next"]);
-      await vi.advanceTimersByTimeAsync(0);
+      await f.respond(1, "Remounted page", false, ["agent:main:next"]);
       expect(f.store.snapshot.result?.sessions.map(({ key }) => key)).toEqual([
         "agent:main:main",
         "agent:main:next",
@@ -405,8 +377,7 @@ it("defers initial and event-driven roster loads while the document is hidden", 
   document.dispatchEvent(new Event("visibilitychange"));
   await vi.advanceTimersByTimeAsync(0);
   expect(f.requests).toHaveLength(1);
-  f.respond(0, "Visible window");
-  await vi.advanceTimersByTimeAsync(0);
+  await f.respond(0, "Visible window");
   expect(f.store.snapshot.cards[0]?.preview).toBe("Visible window");
 });
 
@@ -427,10 +398,8 @@ it.each([false, true])(
     await vi.advanceTimersByTimeAsync(0);
     expect(f.requests).toHaveLength(2);
     expect(f.requests[1]?.params.offset).toBeUndefined();
-    f.respond(1, "Current connection");
-    await vi.advanceTimersByTimeAsync(0);
-    f.respond(0, "Old connection", true);
-    await vi.advanceTimersByTimeAsync(0);
+    await f.respond(1, "Current connection");
+    await f.respond(0, "Old connection", true);
     expect(f.store.snapshot.cards[0]?.preview).toBe("Current connection");
     expect(f.requests).toHaveLength(2);
   },
@@ -441,9 +410,7 @@ it.each([false, true])(
   async (replyHidden) => {
     let visibility: DocumentVisibilityState = "visible";
     vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
-    const f = fixture();
-    f.subscribe();
-    await vi.advanceTimersByTimeAsync(0);
+    const f = await subscribedFixture();
     visibility = "hidden";
     document.dispatchEvent(new Event("visibilitychange"));
     await vi.advanceTimersByTimeAsync(0);
@@ -453,8 +420,7 @@ it.each([false, true])(
     }
     expect(f.requests).toHaveLength(1);
     if (replyHidden) {
-      f.respond(0, "Hidden page", true);
-      await vi.advanceTimersByTimeAsync(0);
+      await f.respond(0, "Hidden page", true);
       expect(f.requests).toHaveLength(1);
     }
     visibility = "visible";
@@ -462,13 +428,12 @@ it.each([false, true])(
     await vi.advanceTimersByTimeAsync(0);
     if (!replyHidden) {
       expect(f.requests).toHaveLength(1);
-      f.respond(0, "Revoked page", true);
+      await f.respond(0, "Revoked page", true);
       await vi.advanceTimersByTimeAsync(15_000);
     }
     expect(f.requests).toHaveLength(2);
     expect(f.requests[1]?.params.offset).toBeUndefined();
-    f.respond(1, "Current window");
-    await vi.advanceTimersByTimeAsync(0);
+    await f.respond(1, "Current window");
     expect(f.store.snapshot.cards[0]?.preview).toBe("Current window");
   },
 );
