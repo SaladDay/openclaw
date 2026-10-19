@@ -1,6 +1,5 @@
-import { createMemo, createUniqueId, Show, untrack } from "solid-js";
+import { createEffect, createMemo, createUniqueId, onSettled, Show, untrack } from "solid-js";
 import { pathForRoute } from "../../../app-route-paths.ts";
-import { icons } from "../../../components/icons.ts";
 import { Icon } from "../../../components/solid/icon.tsx";
 import {
   Menu,
@@ -23,7 +22,7 @@ import {
 import { uploadsEnabled } from "../../../lib/uploads.ts";
 import { handleChatAttachmentMenuSelection } from "./chat-attachment-inputs.ts";
 import { useSingleAttachmentPicker } from "./chat-attachment-picker-policy.ts";
-import { LitContent } from "./chat-composer-interop.tsx";
+import { ComposerContent } from "./chat-composer-content.tsx";
 import {
   handleComposerLibrarySelection,
   composerLibraryMenuItems,
@@ -45,7 +44,6 @@ import type {
   ChatComposerPlusMenuProps,
   ChatComposerPlusMenuView,
 } from "./chat-composer-plus-menu.types.ts";
-import { closeOtherChatComposerPickers } from "./chat-picker-overlay.ts";
 
 registerEnglishCatalog(registerMcpEnglish);
 
@@ -129,7 +127,7 @@ function rootItems(menu: ChatComposerPlusMenuContentProps): MenuEntry[] {
           : !menu.webSearchBaseEnabled
             ? t("chat.composer.menu.webSearchGloballyDisabled")
             : ""),
-      icon: icons.globe,
+      icon: "globe",
       checkbox: true,
     }),
     menuDivider("manage-divider"),
@@ -333,19 +331,16 @@ function toolItems(menu: ChatComposerPlusMenuContentProps, serverName: string): 
 }
 
 function handleMenuSelection(
-  item: MenuItem,
+  { id: value }: MenuItem,
   event: CustomEvent<MenuItem>,
-  surface: HTMLElement,
-  pickerAnchor: HTMLElement | undefined,
-  props: ChatComposerPlusMenuContentProps,
+  overlay: MenuHandle["overlay"],
+  ownerProps: { menu: ChatComposerPlusMenuContentProps },
 ) {
-  const value = item.id;
+  const props = ownerProps.menu;
+  const { surface, trigger } = overlay;
   if (
     uploadsEnabled(props.attachments.uploadConfig) &&
-    handleChatAttachmentMenuSelection(
-      { currentTarget: surface, detail: { item: { value } } },
-      pickerAnchor,
-    )
+    handleChatAttachmentMenuSelection(surface, value, trigger)
   ) {
     return;
   }
@@ -358,10 +353,19 @@ function handleMenuSelection(
     return;
   }
   const changeView = (view: ChatComposerPlusMenuView) => {
+    const focused = surface.ownerDocument.activeElement;
     props.onViewChange(view);
-    requestAnimationFrame(() =>
-      surface.querySelector<HTMLElement>('[role^="menuitem"]:not([disabled])')?.focus(),
-    );
+    onSettled(() => {
+      const active = surface.ownerDocument.activeElement;
+      // A controlled close can settle before Menu applies it; newer focus also wins.
+      if (
+        overlay.open &&
+        ownerProps.menu.open &&
+        (active === focused || (active === surface.ownerDocument.body && !focused?.isConnected))
+      ) {
+        surface.querySelector<HTMLElement>('[role^="menuitem"]:not([disabled])')?.focus();
+      }
+    });
   };
   const toggleCapability = (
     group: "skills" | "mcpServers",
@@ -478,7 +482,7 @@ function handleMenuSelection(
 }
 
 function PlusMenuSurface(props: { menu: ChatComposerPlusMenuContentProps }) {
-  let handle: MenuHandle | undefined;
+  let handle!: MenuHandle;
   let host!: HTMLDivElement;
   const id = createUniqueId();
   const view = createMemo(() => (props.menu.showCapabilities ? props.menu.view : "root"));
@@ -531,18 +535,7 @@ function PlusMenuSurface(props: { menu: ChatComposerPlusMenuContentProps }) {
           ref={(next) => {
             handle = next;
           }}
-          onSelect={(item, event) => {
-            if (handle) {
-              handleMenuSelection(
-                item,
-                event,
-                handle.overlay.surface,
-                handle.overlay.trigger,
-                props.menu,
-              );
-            }
-          }}
-          onBeforeShow={() => closeOtherChatComposerPickers(host)}
+          onSelect={(item, event) => handleMenuSelection(item, event, handle.overlay, props)}
           onNavigate={({ value }) =>
             props.menu.onNavigate(value === "manage-skills" ? "skills" : "plugins")
           }
@@ -557,13 +550,26 @@ function PlusMenuSurface(props: { menu: ChatComposerPlusMenuContentProps }) {
           }}
         />
       </div>
-      <LitContent value={props.menu.addServerDialog} />
-      <LitContent value={props.menu.libraryDialog} />
+      <ComposerContent>{props.menu.addServerDialog}</ComposerContent>
+      <ComposerContent>{props.menu.libraryDialog}</ComposerContent>
     </>
   );
 }
 
 export function ChatComposerPlusMenu(props: { menu: ChatComposerPlusMenuProps }) {
+  // Reconnects can replace the capability owner while this menu stays open.
+  createEffect(
+    () => ({
+      open: props.menu.open,
+      view: props.menu.view,
+      load: props.menu.capabilityMenu?.onLoadView,
+    }),
+    ({ open, view, load }) => {
+      if (open) {
+        load?.(view);
+      }
+    },
+  );
   const resolved = createMemo(() => {
     const current = props.menu;
     const capabilityMenu = current.capabilityMenu;

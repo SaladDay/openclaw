@@ -1,11 +1,12 @@
 /* @vitest-environment jsdom */
-import { html } from "lit";
+import { createComponent } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { finishElementAnimations } from "../test-helpers/animations.ts";
 import { installTestLinkReader } from "../test-helpers/link-reader.ts";
-import { renderKbd } from "./kbd.ts";
+import { mountSolid } from "../test-helpers/mount-solid.ts";
 import { linkReaderHovercardBootstrap } from "./link-reader-hovercard-registration.ts";
-import { createPortaledHovercard, PortaledHovercardController } from "./portaled-hovercard.ts";
+import { createPortaledHovercard, createPortaledHovercardOwner } from "./portaled-hovercard.ts";
+import { Kbd } from "./solid/kbd.tsx";
 import { installTitleTooltips } from "./tooltip-title.ts";
 import {
   createTooltip,
@@ -110,18 +111,22 @@ describe("openclaw-tooltip", () => {
     },
   );
 
-  it("renders shortcut templates without changing plain descriptions or dismissal", async () => {
-    const { tooltip, trigger } = createTooltip("Search (⌘K)");
-    tooltip.contentTemplate = html`Search (${renderKbd(["⌘", "K"], { inline: true })})`;
+  it("renders slotted shortcuts without duplicating descriptions", async () => {
+    const { tooltip, trigger, card } = createRichTooltip("");
+    const view = mountSolid(
+      () => ["Search (", createComponent(Kbd, { keys: ["⌘", "K"], inline: true }), ")"],
+      { container: card },
+    );
     document.body.append(tooltip);
     await commitTooltip(tooltip);
 
     hoverTrigger(trigger);
     vi.advanceTimersByTime(150);
     await settleTooltip(tooltip);
-    const content = tooltipContent(tooltip);
-    expect(content?.querySelector("kbd svg")).not.toBeNull();
-    expect(content?.textContent?.replace(/\s+/gu, "")).toBe("Search(⌘K)");
+    expect(projectedTooltipContent(tooltip)).toEqual([card]);
+    expect(card.querySelector("kbd svg")).not.toBeNull();
+    expect(card.textContent?.replace(/\s+/gu, "")).toBe("Search(⌘K)");
+    expect(tooltipContent(tooltip)?.textContent).toBe("");
     const descriptionId = trigger.getAttribute("aria-describedby") ?? "";
     expect(document.getElementById(descriptionId)?.textContent).toBe("Search (⌘K)");
 
@@ -129,15 +134,18 @@ describe("openclaw-tooltip", () => {
     vi.advanceTimersByTime(150);
     await expectOpenCount(1);
     dispatchMousePointer(trigger, "pointerleave");
+    vi.advanceTimersByTime(100);
     await expectOpenCount(0);
     focusTrigger(trigger);
     await expectOpenCount(1);
     dispatchMousePointer(trigger, "pointerdown");
     await expectOpenCount(0);
 
-    tooltip.contentTemplate = undefined;
+    view.unmount();
+    card.remove();
     tooltip.content = "Search unavailable";
     await commitTooltip(tooltip);
+    const content = tooltipContent(tooltip);
     expect(content?.querySelector("kbd")).toBeNull();
     expect(content?.textContent).toBe("Search unavailable");
     expect(document.getElementById(descriptionId)?.textContent).toBe("Search unavailable");
@@ -179,6 +187,36 @@ describe("openclaw-tooltip", () => {
     vi.advanceTimersByTime(149);
     await expectOpenCount(0);
     vi.advanceTimersByTime(1);
+    await expectOpenCount(1);
+  });
+
+  it("retires listeners when an external anchor is replaced or the tooltip disconnects", async () => {
+    const { tooltip, trigger } = createTooltip("Anchor details");
+    const next = document.createElement("button");
+    tooltip.anchor = trigger;
+    document.body.append(trigger, next, tooltip);
+    await commitTooltip(tooltip);
+    focusTrigger(trigger);
+    await expectOpenCount(1);
+
+    tooltip.anchor = next;
+    await settleTooltip(tooltip);
+    await expectOpenCount(0);
+    focusTrigger(trigger);
+    hoverTrigger(trigger);
+    vi.advanceTimersByTime(150);
+    await expectOpenCount(0);
+    focusTrigger(next);
+    await expectOpenCount(1);
+
+    tooltip.remove();
+    focusTrigger(next);
+    hoverTrigger(next);
+    vi.advanceTimersByTime(150);
+    document.body.append(tooltip);
+    await settleTooltip(tooltip);
+    await expectOpenCount(0);
+    focusTrigger(next);
     await expectOpenCount(1);
   });
 
@@ -624,7 +662,7 @@ describe("title tooltips", () => {
     vi.advanceTimersByTime(150);
     await expectOpenCount(1);
 
-    const hovercard = new PortaledHovercardController(() => hovercard.reset());
+    const hovercard = createPortaledHovercardOwner(() => hovercard.reset());
     hovercard.markTrigger(trigger);
     await Promise.resolve();
     await commitTooltip(tooltip);
