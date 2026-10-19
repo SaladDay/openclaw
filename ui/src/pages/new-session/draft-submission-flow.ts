@@ -36,7 +36,6 @@ import type {
   DraftSubmissionSnapshot,
 } from "./draft-submission-contract.ts";
 import { prepareDraftSubmission } from "./draft-submission-input.ts";
-import { completeInitialSessionTurn } from "./initial-session-turn-handoff.ts";
 import {
   type InstantThreadHandoff,
   prepareInstantThreadHandoff,
@@ -479,6 +478,10 @@ export class DraftSubmissionFlow {
         Boolean(input.apiAttachments?.length),
         !startup && !input.pendingPlacement,
       );
+      const { completeInitialSessionTurn } = await import("./initial-session-turn-handoff.ts");
+      if (requestSignal.aborted || context.gateway.snapshot.client !== input.client) {
+        return;
+      }
       const remoteProject =
         !this.place.hostedEnvironment &&
         !startup &&

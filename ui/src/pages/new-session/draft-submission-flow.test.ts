@@ -40,6 +40,15 @@ async function readyChatRoute() {
 }
 
 describe("DraftSubmissionFlow", () => {
+  it("cancels before loading the creation handoff can start a write", async () => {
+    const { context, flow } = createDraftFixture();
+    flow.setMessage("Start a conversation");
+    const submission = flow.submit();
+    flow.disconnect();
+    await submission;
+    expect(context.sessions.createResult).not.toHaveBeenCalled();
+  });
+
   it.each([
     { waitMs: 45_000, cancel: false },
     { waitMs: 240_000, cancel: false },
@@ -572,6 +581,7 @@ describe("DraftSubmissionFlow", () => {
       }
 
       flow.resumeInterruptedSubmission();
+      await vi.dynamicImportSettled();
 
       if (expired) {
         expect(flow.submissionOutcomeUnknown).toBe("gateway-changed");

@@ -55,6 +55,10 @@ limits locally and in CI; `pnpm ui:build` reports them without rejecting the bui
 Worker scripts and other URL assets remain available in the offline cache without
 being modulepreloaded into the document.
 
+MCP app new-conversation handling loads when the app requests a conversation.
+New Session loads its completion handler before sending the creation request,
+so a failed chunk download cannot strand an accepted creation.
+
 After a Gateway update, already-open tabs reload the current build when they encounter a missing old asset. Reloading is automatic when no unsaved-work guard blocks it; otherwise, save or discard the protected work and use the **Reload** banner. The Gateway and service worker keep only the current build's assets.
 
 Bundled public assets (themes, fonts, icons, and artwork) use `?v=<build-id>` URLs with a one-year immutable HTTP cache. The ID includes a digest of the public files, so rebuilding changed files at the same commit also changes their URLs. The Gateway snapshots this identity at startup; restart it after rebuilding an in-place installation. Unversioned requests, stale IDs, documents, `sw.js`, and custom `gateway.controlUi.root` installs keep `Cache-Control: no-cache`. The service worker caches matching current-build public URLs for offline reuse.

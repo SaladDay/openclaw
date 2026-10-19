@@ -18,7 +18,7 @@ import {
 import { t } from "../../i18n/index.ts";
 import { registerMcpAppEnglish } from "../../i18n/locales/en-mcp-app.ts";
 import { publishMcpAppContext } from "../../lib/mcp-app-context.ts";
-import { mcpAppMessageInput, sendMcpAppNewConversation } from "../../lib/mcp-app-message.ts";
+import { mcpAppMessageInput } from "../../lib/mcp-app-message.ts";
 import { listen } from "../../lib/reactive/listener.ts";
 import { resolveUiConversationIdentity } from "../../lib/sessions/session-key.ts";
 import { uploadsEnabled } from "../../lib/uploads.ts";
@@ -82,6 +82,7 @@ export function createChatPaneMcpApps(options: {
   element: HTMLElement;
   current: () => ChatPaneMcpAppOwner | null;
 }): () => void {
+  let disposed = false;
   let openedLaunch: McpAppOpenDetail | undefined;
   function syncLaunch(): void {
     const owner = options.current();
@@ -172,18 +173,35 @@ export function createChatPaneMcpApps(options: {
     event.preventDefault();
     void (async () => {
       if (detail.target === "new") {
+        const client = context.gateway.snapshot.client;
+        const connectionGeneration = client?.connectionGeneration;
+        const agentId = state.assistantAgentId || owner.agentId || "";
+        const selectionIntent = context.agentSelection.intentRevision;
         const request = chatOutboxOwner(state).admissions.beginRequest(
           state,
           resolveUiConversationIdentity(state, state.sessionKey),
           generateUUID(),
         );
         try {
-          return await sendMcpAppNewConversation(
-            context,
-            state.assistantAgentId || owner.agentId || "",
-            detail,
-            request.signal,
-          );
+          const { sendMcpAppNewConversation } =
+            await import("../../lib/mcp-app-new-conversation.ts");
+          const current = options.current();
+          if (
+            disposed ||
+            request.signal.aborted ||
+            !current ||
+            current.state !== state ||
+            current.context !== context ||
+            state.client !== client ||
+            context.gateway.snapshot.client !== client ||
+            client?.connectionGeneration !== connectionGeneration ||
+            context.agentSelection.intentRevision !== selectionIntent ||
+            state.sessionKey !== detail.sessionKey ||
+            (state.assistantAgentId || current.agentId || "") !== agentId
+          ) {
+            return false;
+          }
+          return await sendMcpAppNewConversation(context, agentId, detail, request.signal);
         } finally {
           request.release();
         }
@@ -263,6 +281,9 @@ export function createChatPaneMcpApps(options: {
     listen(element, MCP_APP_OPEN_EVENT, { handleEvent: receiveOpen }),
     listen(element, WIDGET_PROMPT_EVENT, { handleEvent: receiveWidgetPrompt }),
   ];
-  onCleanup(() => stopEvents.forEach((stop) => stop()));
+  onCleanup(() => {
+    disposed = true;
+    stopEvents.forEach((stop) => stop());
+  });
   return syncLaunch;
 }
