@@ -424,9 +424,9 @@ export function createReplyRestartRecoveryClaimController(
       return "admitted";
     }
 
-    const recoverableDeliveryContext = sourceTurnId
-      ? params.resolveDeliveryContext(entry)
-      : undefined;
+    const deliveryContext = params.resolveDeliveryContext(entry);
+    const recoverableDeliveryContext =
+      deliveryContext && sourceTurnId ? deliveryContext : undefined;
     if (recoverableDeliveryContext && !strandedRetryRunId) {
       const sourceMessage = recorder?.getPersistedMessage?.() ?? (await recorder?.resolveMessage());
       const persistedSourceTurnId = normalizeOptionalString(sourceMessage?.idempotencyKey);

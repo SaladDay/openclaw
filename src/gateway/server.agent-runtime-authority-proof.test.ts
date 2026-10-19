@@ -114,14 +114,28 @@ describe("agent RPC real delegated-authority effects", () => {
       requests: (Promise<unknown> | undefined)[],
       observers: { mockRestore: () => unknown }[] = [],
       reservation?: ReturnType<typeof createAgentDedupeLifecycle>,
+      expectedPublicationDenial = false,
     ) => {
       release.resolve();
-      await execution?.cleanup();
-      await Promise.allSettled(requests.filter((request) => request !== undefined));
-      reservation?.clearUnaccepted();
-      await f.cleanup();
-      observers.forEach((observer) => observer.mockRestore());
-      signal.removeEventListener("abort", unblock);
+      try {
+        if (expectedPublicationDenial) {
+          await expect(execution?.cleanup()).rejects.toMatchObject({
+            name: "SessionMutationAuthorizationChangedError",
+            message: "agent runtime authority is no longer active",
+          });
+        } else {
+          await execution?.cleanup();
+        }
+      } finally {
+        await Promise.allSettled(requests.filter((request) => request !== undefined));
+        reservation?.clearUnaccepted();
+        try {
+          await f.cleanup();
+        } finally {
+          observers.forEach((observer) => observer.mockRestore());
+          signal.removeEventListener("abort", unblock);
+        }
+      }
     };
     return { entered, release, finish };
   }
@@ -254,7 +268,7 @@ describe("agent RPC real delegated-authority effects", () => {
           expect(agentCommandMock).not.toHaveBeenCalled();
         }
       } finally {
-        await finish([writer, request], [observer], replacement);
+        await finish([writer, request], [observer], replacement, mode === "accepted custody");
       }
     },
   );

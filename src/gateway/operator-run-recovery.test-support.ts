@@ -2,6 +2,7 @@ import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import type { GatewayClientInfo } from "../../packages/gateway-protocol/src/client-info.js";
 import { createRestartRecoveryOperatorSource } from "../agents/operator-run-recovery-source.js";
+import type { RequesterOrigin } from "../agents/requester-origin.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -35,6 +36,7 @@ export async function createOperatorRecoveryFixture(params: {
   sourceIngress?: "control-ui" | "internal";
   sourceRunId?: string;
   inputProvenance?: InputProvenance;
+  requesterOrigin?: RequesterOrigin;
 }) {
   let config = params.config;
   const context = params.context;
@@ -130,6 +132,7 @@ export async function createOperatorRecoveryFixture(params: {
       sessionKey: target.sessionKey,
       sourceRunId: target.sourceRunId,
       inputProvenance: params.inputProvenance,
+      requesterOrigin: params.requesterOrigin,
     }),
     "host-captured recovery source",
   );

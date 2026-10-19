@@ -131,6 +131,7 @@ describe("startAgentRunExecution Gateway ownership", () => {
     "startup failure",
     "cleanup failure",
     "completed cleanup failure",
+    "publication failure",
     "prewriter abort",
   ] as const)("retains the exact run owner through runtime disposal: %s", async (outcome) => {
     const prewriter = outcome === "prewriter abort";
@@ -161,6 +162,12 @@ describe("startAgentRunExecution Gateway ownership", () => {
     const actualDispatch =
       await vi.importActual<typeof import("./agent-run-dispatch.js")>("./agent-run-dispatch.js");
     dispatchAgentRunFromGateway.mockImplementationOnce(actualDispatch.dispatchAgentRunFromGateway);
+    const publicationFault = new Error("Synthetic final publication denied");
+    if (outcome === "publication failure") {
+      vi.mocked(execution.params.io.emitFinal).mockImplementation(() => {
+        throw publicationFault;
+      });
+    }
     const cleanupFault = new Error("Synthetic unfinished runtime cleanup");
     execution.runtimeRelease.mockImplementation(
       prewriter
@@ -289,6 +296,8 @@ describe("startAgentRunExecution Gateway ownership", () => {
         expect(nativeDisposals).toBe(1);
       } else if (outcome === "cleanup failure") {
         expect(await observed).toBe(cleanupFault);
+      } else if (outcome === "publication failure") {
+        expect(await observed).toBe(publicationFault);
       } else {
         await completion;
       }

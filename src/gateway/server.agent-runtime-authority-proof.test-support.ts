@@ -388,9 +388,12 @@ export async function holdExecution(signal: AbortSignal) {
     observer,
     cleanup: async () => {
       release.resolve();
-      await Promise.allSettled([execution]);
-      observer.mockRestore();
-      signal.removeEventListener("abort", releaseWait);
+      try {
+        await execution;
+      } finally {
+        observer.mockRestore();
+        signal.removeEventListener("abort", releaseWait);
+      }
     },
   };
 }

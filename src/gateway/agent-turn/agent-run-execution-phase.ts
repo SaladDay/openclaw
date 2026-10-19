@@ -80,8 +80,9 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
   const run = () =>
     // Autonomous turns prepare their own workspace and cannot borrow a previous chat run's gate.
     runWithAgentWorkspaceReadiness(undefined, () => executeAgentRun(params));
+  let publicationFailure: { error: unknown } | undefined;
   try {
-    await runWithSessionControllerCleanup(() =>
+    publicationFailure = await runWithSessionControllerCleanup(() =>
       input ? withSessionControllerSource(input, run) : run(),
     );
     cleanup.resolve();
@@ -93,9 +94,15 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
     }
     throw error;
   }
+  // A denied response cannot turn completed disposal back into retained work.
+  if (publicationFailure) {
+    throw publicationFailure.error;
+  }
 }
 
-async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<void> {
+async function executeAgentRun(
+  params: StartAgentRunExecutionParams,
+): Promise<{ error: unknown } | undefined> {
   const { prepared } = params;
   let deliverFinal: (() => void) | undefined;
   const deferFinal = (...args: Parameters<typeof params.io.emitFinal>) => {
@@ -688,7 +695,13 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
     await (prepared.activeGatewayWorkAdmission
       ? prepared.activeGatewayWorkAdmission.run(execute)
       : execute());
-    deliverFinal?.();
+    try {
+      deliverFinal?.();
+    } catch (error) {
+      // Preserve response failure, but let actual disposal finish before classifying custody.
+      return { error };
+    }
+    return undefined;
   } finally {
     // Shutdown joins the execution through asynchronous runtime disposal, not just bookkeeping.
     try {

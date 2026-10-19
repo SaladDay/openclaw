@@ -176,6 +176,10 @@ describe("cold restart recovery of native operator input", () => {
             : { id: GATEWAY_CLIENT_IDS.MACOS_APP, mode: GATEWAY_CLIENT_MODES.UI },
         localOperator: scenario !== "Control UI source",
         inputProvenance,
+        requesterOrigin:
+          scenario === "peer follow-up"
+            ? { sessionKey: "agent:main:dashboard:peer", operatorProfileId: owner.id }
+            : undefined,
         sourceRunId:
           scenario === "requester continuation after cohort settlement"
             ? "announce:requester-settle:main:parent:completed-child:yield-1"
