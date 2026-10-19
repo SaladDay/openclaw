@@ -22,7 +22,7 @@ Referral link for MiniMax Coding Plan (10% off): [MiniMax Coding Plan](https://p
 | Model                    | Type             | Description                              |
 | ------------------------ | ---------------- | ---------------------------------------- |
 | `MiniMax-M3`             | Chat (reasoning) | Default hosted reasoning model           |
-| `MiniMax-M3.1-Flash`     | Chat (reasoning) | Token Plan with adjustable effort        |
+| `MiniMax-M3.1-Flash`     | Chat (reasoning) | Adjustable effort, 1M context            |
 | `MiniMax-M2.7`           | Chat (reasoning) | Previous hosted reasoning model          |
 | `MiniMax-M2.7-highspeed` | Chat (reasoning) | Faster M2.7 reasoning tier               |
 | `MiniMax-VL-01`          | Vision           | Image understanding model                |
@@ -32,7 +32,7 @@ Referral link for MiniMax Coding Plan (10% off): [MiniMax Coding Plan](https://p
 
 Model refs follow the auth path: `minimax/<model>` for API-key setups, `minimax-portal/<model>` for OAuth setups.
 
-`MiniMax-M3.1-Flash` supports text and image input with a 1,000,000-token context window. MiniMax currently offers it only through Token Plan and MiniMax Code; availability depends on your account. Its bundled cost fields use MiniMax's published per-token pricing: $0.15 input, $0.60 output, and $0.015 cache read per 1M tokens. `MiniMax-M3` remains the default model.
+`MiniMax-M3.1-Flash` supports text and image input with a 1,000,000-token context window. It is available with pay-as-you-go API keys as well as Token Plan and MiniMax Code. Its bundled cost fields use MiniMax's published per-token pricing: $0.15 input, $0.60 output, and $0.015 cache read per 1M tokens. `MiniMax-M3` remains the default model.
 
 MiniMax M3 and M3.1 Flash are preferred [Code Mode](/tools/code-mode) models on both API-key and OAuth routes. With no global Code Mode setting, the automatic tier can engage it; explicit agent or model settings still take precedence.
 
