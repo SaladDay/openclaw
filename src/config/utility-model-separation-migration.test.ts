@@ -8,6 +8,7 @@ import {
   materializeUtilityModelSeparation,
   resolveUtilityModelSeparationError,
 } from "./utility-model-separation-migration.js";
+import { localProvider } from "./utility-model-separation.test-support.js";
 
 function legacyConfig(): OpenClawConfig {
   return {
@@ -19,24 +20,7 @@ function legacyConfig(): OpenClawConfig {
       },
       entries: { worker: {}, disabled: { utilityModel: "" } },
     },
-    models: {
-      providers: {
-        "local-fixture": {
-          baseUrl: "http://127.0.0.1:9/v1",
-          models: [
-            {
-              id: "small",
-              name: "Local fixture",
-              reasoning: false,
-              input: ["text"],
-              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-              contextWindow: 8192,
-              maxTokens: 1024,
-            },
-          ],
-        },
-      },
-    },
+    models: { providers: { "local-fixture": localProvider() } },
     auth: { profiles: { "local:utility": { provider: "local-fixture", mode: "api_key" } } },
   };
 }
@@ -73,15 +57,7 @@ describe("utility model separation migration", () => {
     if (kind === "added-provider") {
       next.models = {
         providers: {
-          added: {
-            baseUrl: "http://127.0.0.1:9/v1",
-            models: [
-              {
-                ...expectDefined(previous.models?.providers?.["local-fixture"]?.models[0], "model"),
-                id: "new",
-              },
-            ],
-          },
+          added: localProvider("new"),
           ...previous.models?.providers,
         },
       };
@@ -90,9 +66,9 @@ describe("utility model separation migration", () => {
     } else if (kind.startsWith("builtin")) {
       next.models = legacyConfig().models;
     }
-    const result = materializeUtilityModelSeparation(next, previous);
-    expect(resolveUtilityModelSeparationError(result.config)).toBeUndefined();
-    expect(result.config.agents?.defaults?.model).toEqual(
+    const { config, changes } = materializeUtilityModelSeparation(next, previous);
+    expect(resolveUtilityModelSeparationError(config)).toBeUndefined();
+    expect(config.agents?.defaults?.model).toEqual(
       kind.startsWith("builtin")
         ? { primary: `${DEFAULT_PROVIDER}/${DEFAULT_MODEL}` }
         : {
@@ -100,19 +76,14 @@ describe("utility model separation migration", () => {
             fallbacks: ["backup/model@backup:account"],
           },
     );
-    expect(result.config.agents?.defaults?.utilityModel).toBe(
-      previous.agents?.defaults?.utilityModel,
-    );
-    expect(result.config.agents?.defaults?.models).toEqual(previous.agents?.defaults?.models);
-    expect(result.config.agents?.entries).toEqual(previous.agents?.entries);
-    expect(result.config.auth).toEqual(previous.auth);
-    expect(result.config.models).toBe(next.models);
-    expect(hasUtilityModelSeparationMigrationMarker(result.config)).toBe(true);
-    expect(result.changes).toHaveLength(1);
-    expect(materializeUtilityModelSeparation(result.config)).toEqual({
-      config: result.config,
-      changes: [],
-    });
+    expect(config.agents?.defaults?.utilityModel).toBe(previous.agents?.defaults?.utilityModel);
+    expect(config.agents?.defaults?.models).toEqual(previous.agents?.defaults?.models);
+    expect(config.agents?.entries).toEqual(previous.agents?.entries);
+    expect(config.auth).toEqual(previous.auth);
+    expect(config.models).toBe(next.models);
+    expect(hasUtilityModelSeparationMigrationMarker(config)).toBe(true);
+    expect(changes).toHaveLength(1);
+    expect(materializeUtilityModelSeparation(config)).toEqual({ config, changes: [] });
     expect(previous).toEqual(original);
   });
 
@@ -131,12 +102,12 @@ describe("utility model separation migration", () => {
         id === "non-selected-dynamic-row"
           ? previous
           : { ...previous, meta: { migrations: { utilityModelSeparation: true as const } } };
-      const result = materializeUtilityModelSeparation(next, previous);
-      expect(result.config.agents).toBe(previous.agents);
-      expect(hasUtilityModelSeparationMigrationMarker(result.config)).toBe(false);
-      expect(result.changes).toEqual([]);
+      const { config, changes } = materializeUtilityModelSeparation(next, previous);
+      expect(config.agents).toBe(previous.agents);
+      expect(hasUtilityModelSeparationMigrationMarker(config)).toBe(false);
+      expect(changes).toEqual([]);
       if (id === "non-selected-dynamic-row") {
-        expect(result.config).toBe(previous);
+        expect(config).toBe(previous);
       }
     },
   );
@@ -198,12 +169,11 @@ describe("utility model separation migration", () => {
         expectDefined(next.agents?.defaults, "agent defaults").model =
           "chosen/model@chosen:profile";
       }
-      const result = materializeUtilityModelSeparation(next, previous);
-      const migrated = result.config;
+      const { config: migrated, changes } = materializeUtilityModelSeparation(next, previous);
       expect(hasUtilityModelSeparationMigrationMarker(migrated)).toBe(true);
       if (scope === "empty-source" || scope === "converted") {
         expect(migrated.agents).toBe(next.agents);
-        expect(result.changes).toEqual([]);
+        expect(changes).toEqual([]);
         return;
       }
       const model =

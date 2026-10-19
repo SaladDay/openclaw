@@ -2,6 +2,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as installedRecords from "../plugins/installed-plugin-index-record-reader.js";
 import type { PluginManifestRegistry } from "../plugins/manifest-registry.js";
+import { createPluginManifestRecordFixture } from "../plugins/plugin-metadata.test-support.js";
 import * as schemaValidator from "../plugins/schema-validator.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import type { OpenClawConfig } from "./types.js";
@@ -9,6 +10,7 @@ import {
   validateConfigObjectWithPlugins,
   validateConfigObjectWithPluginsAsync,
   validateConfigObjectWithStrictFactsAsync,
+  type ValidateConfigWithPluginsAsyncParams,
 } from "./validation.js";
 import type { PreparedConfigValidationPluginMetadata } from "./validation.types.js";
 
@@ -32,14 +34,8 @@ function preparedMetadata(): PreparedConfigValidationPluginMetadata {
   const manifestRegistry: PluginManifestRegistry = {
     diagnostics: [],
     plugins: [
-      {
+      createPluginManifestRecordFixture({
         id: "validation-fixture",
-        channels: [],
-        cliBackends: [],
-        hooks: [],
-        providers: [],
-        skills: [],
-        origin: "bundled",
         rootDir: "/fixture/plugin",
         source: "/fixture/plugin/index.js",
         manifestPath: "/fixture/plugin/openclaw.plugin.json",
@@ -49,10 +45,25 @@ function preparedMetadata(): PreparedConfigValidationPluginMetadata {
           required: ["workspace"],
           additionalProperties: false,
         },
-      },
+      }),
     ],
   };
   return { manifestRegistry, installedPluginRecordIds: new Set() };
+}
+
+function validator() {
+  const metadata = preparedMetadata();
+  const load = vi.fn(async () => metadata);
+  const validate = (
+    raw: unknown,
+    options: Pick<ValidateConfigWithPluginsAsyncParams, "pluginValidation"> = {},
+  ) =>
+    validateConfigObjectWithPluginsAsync(raw, {
+      env,
+      loadPluginMetadataSnapshotAsync: load,
+      ...options,
+    });
+  return { metadata, load, validate };
 }
 
 describe("async config plugin validation", () => {
@@ -100,14 +111,8 @@ describe("async config plugin validation", () => {
   });
 
   it("retires removed schema inputs without discovering metadata for an empty revision", async () => {
-    const metadata = preparedMetadata();
+    const { load, validate } = validator();
     const raw = pluginConfig();
-    const load = vi.fn(async () => metadata);
-    const validate = (config: unknown) =>
-      validateConfigObjectWithPluginsAsync(config, {
-        env,
-        loadPluginMetadataSnapshotAsync: load,
-      });
     const check = vi.spyOn(schemaValidator, "validatePluginSchemaValue");
     expect((await validate(raw)).ok).toBe(true);
     expect(check).toHaveBeenCalledTimes(1);
@@ -149,11 +154,8 @@ describe("async config plugin validation", () => {
 
   it("returns core issues before requesting plugin metadata", async () => {
     const raw = { gateway: { port: 0 } };
-    const load = vi.fn(async () => preparedMetadata());
-    const result = await validateConfigObjectWithPluginsAsync(raw, {
-      env,
-      loadPluginMetadataSnapshotAsync: load,
-    });
+    const { load, validate } = validator();
+    const result = await validate(raw);
     expect(result).toEqual(validateConfigObjectWithPlugins(raw, { env }));
     expect(result).toMatchObject({
       ok: false,
@@ -210,7 +212,7 @@ describe("async config plugin validation", () => {
   it.each(["full", "core-only"] as const)(
     "keeps synchronous %s policy and explicit ownership results",
     async (pluginValidation) => {
-      const metadata = preparedMetadata();
+      const { metadata, load, validate } = validator();
       const raw = {
         agents: {
           ownership: "explicit",
@@ -219,12 +221,7 @@ describe("async config plugin validation", () => {
         },
         ...pluginConfig(),
       };
-      const load = vi.fn(async () => metadata);
-      const result = await validateConfigObjectWithPluginsAsync(raw, {
-        env,
-        pluginValidation,
-        loadPluginMetadataSnapshotAsync: load,
-      });
+      const result = await validate(raw, { pluginValidation });
       expect(result).toEqual(
         validateConfigObjectWithPlugins(raw, {
           env,
@@ -239,17 +236,9 @@ describe("async config plugin validation", () => {
 
   it("uses prepared installed evidence for stale channels without a synchronous store read", async () => {
     const read = vi.spyOn(installedRecords, "loadInstalledPluginIndexInstallRecordsSync");
-    const metadata = preparedMetadata();
+    const { metadata, validate } = validator();
     metadata.installedPluginRecordIds = new Set(["missing-fixture"]);
-    const result = await validateConfigObjectWithPluginsAsync(
-      {
-        channels: { "missing-fixture": { enabled: true } },
-      },
-      {
-        env,
-        loadPluginMetadataSnapshotAsync: async () => metadata,
-      },
-    );
+    const result = await validate({ channels: { "missing-fixture": { enabled: true } } });
     expect(result).toMatchObject({
       ok: true,
       warnings: expect.arrayContaining([

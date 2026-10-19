@@ -46,7 +46,6 @@ if (!bundledPluginsDir) {
 }
 
 type StateFixture = {
-  release: string;
   sessions: Array<{
     agentId: string;
     sessionKey: string;
@@ -108,7 +107,6 @@ function prepareState(home: string, release: string, configName: string) {
   );
   fs.writeFileSync(configPath, JSON.stringify(config));
   return {
-    home,
     stateDir,
     configPath,
     fixture,
@@ -122,6 +120,12 @@ function prepareState(home: string, release: string, configName: string) {
       OPENCLAW_DISABLE_BUNDLED_PLUGINS: "0",
     },
   };
+}
+
+function throwFailures(errors: unknown[], message: string) {
+  if (errors.length) {
+    throw errors.length === 1 ? errors[0] : new AggregateError(errors, message);
+  }
 }
 
 function assertDatabaseIntegrity(stateDir: string, fixture: StateFixture) {
@@ -301,12 +305,7 @@ export function createStateStartupCorpusFixture() {
                 } catch (error) {
                   leaseErrors.push(error);
                 }
-                if (leaseErrors.length === 1) {
-                  throw leaseErrors[0];
-                }
-                if (leaseErrors.length > 1) {
-                  throw new AggregateError(leaseErrors, "Model inspection and cleanup failed");
-                }
+                throwFailures(leaseErrors, "Model inspection and cleanup failed");
               }
               phase("database-close");
               await lifetime.verifyCleanup(() => closeOpenClawAgentDatabasesAsync(stateDir));
@@ -333,12 +332,7 @@ export function createStateStartupCorpusFixture() {
           }
         }
         signal.removeEventListener("abort", onAbort);
-        if (errors.length === 1) {
-          throw errors[0];
-        }
-        if (errors.length > 1) {
-          throw new AggregateError(errors, "Startup corpus fixture and cleanup failed");
-        }
+        throwFailures(errors, "Startup corpus fixture and cleanup failed");
       });
     },
     cleanup(): Promise<void> {

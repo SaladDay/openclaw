@@ -47,16 +47,6 @@ describe("sessions", () => {
     return { stateDir, mainStorePath, bot2SessionPath };
   }
 
-  async function normalizePathForComparison(filePath: string): Promise<string> {
-    const canonicalFile = await fs.realpath(filePath).catch(() => null);
-    if (canonicalFile) {
-      return canonicalFile;
-    }
-    const parentDir = path.dirname(filePath);
-    const canonicalParent = await fs.realpath(parentDir).catch(() => parentDir);
-    return path.join(canonicalParent, path.basename(filePath));
-  }
-
   it("falls back to unknown when sender missing", () => {
     expect(deriveSessionKey("per-sender", {})).toBe("unknown");
   });
@@ -110,55 +100,26 @@ describe("sessions", () => {
     });
   });
 
-  it("resolves cross-agent absolute sessionFile paths", async () => {
-    const { stateDir, bot2SessionPath } = await createAgentSessionsLayout("cross-agent");
-    const sessionFile = withStateDir(stateDir, () =>
-      // Agent bot1 resolves a sessionFile that belongs to agent bot2
-      resolveSessionFilePathCore("sess-1", { sessionFile: bot2SessionPath }, { agentId: "bot1" }),
-    );
-    expect(await normalizePathForComparison(sessionFile)).toBe(
-      await normalizePathForComparison(bot2SessionPath),
-    );
-  });
-
-  it("falls back when structural cross-root path traverses after sessions", () => {
+  it.each(["../../etc/passwd", "nested/sess-1.jsonl"])("rejects cross-root %s", (suffix) => {
     withStateDir(path.resolve("/different/state"), () => {
-      const originalBase = path.resolve("/original/state");
-      const unsafe = path.join(originalBase, "agents", "bot2", "sessions", "..", "..", "etc");
       const sessionFile = resolveSessionFilePathCore(
         "sess-1",
-        { sessionFile: path.join(unsafe, "passwd") },
+        { sessionFile: sessionPath("/original/state", "bot2", suffix) },
         { agentId: "bot1" },
       );
       expect(sessionFile).toBe(sessionPath("/different/state", "bot1", "sess-1.jsonl"));
     });
   });
 
-  it("falls back when structural cross-root path nests under sessions", () => {
-    withStateDir(path.resolve("/different/state"), () => {
-      const nested = sessionPath("/original/state", "bot2", "nested/sess-1.jsonl");
-      const sessionFile = resolveSessionFilePathCore(
-        "sess-1",
-        { sessionFile: nested },
-        { agentId: "bot1" },
-      );
-      expect(sessionFile).toBe(sessionPath("/different/state", "bot1", "sess-1.jsonl"));
-    });
-  });
-
-  it("resolves sibling agent absolute sessionFile using alternate agentId from options", async () => {
+  it.each([false, true])("resolves sibling sessions with store options=%s", async (withStore) => {
     const { stateDir, mainStorePath, bot2SessionPath } =
       await createAgentSessionsLayout("sibling-agent");
     const sessionFile = withStateDir(stateDir, () => {
-      const opts = resolveSessionFilePathOptions({
-        agentId: "bot2",
-        storePath: mainStorePath,
-      });
-
+      const opts = withStore
+        ? resolveSessionFilePathOptions({ agentId: "bot2", storePath: mainStorePath })
+        : { agentId: "bot1" };
       return resolveSessionFilePathCore("sess-1", { sessionFile: bot2SessionPath }, opts);
     });
-    expect(await normalizePathForComparison(sessionFile)).toBe(
-      await normalizePathForComparison(bot2SessionPath),
-    );
+    expect(await fs.realpath(sessionFile)).toBe(await fs.realpath(bot2SessionPath));
   });
 });

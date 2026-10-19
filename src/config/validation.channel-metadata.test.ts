@@ -27,23 +27,26 @@ function validatedConfig(result: ReturnType<typeof validateConfigObjectWithPlugi
   return result.config;
 }
 
+const objectSchema = (
+  properties: Record<string, unknown>,
+  options: Record<string, unknown> = {},
+) => ({ type: "object", properties, additionalProperties: false, ...options });
+
 function accountSchema() {
-  return { type: "object", properties: { appId: { type: "string" } }, additionalProperties: false };
+  return objectSchema({ appId: { type: "string" } });
 }
 
 function feishuSchema(): Record<string, unknown> {
-  return {
-    type: "object",
-    properties: {
+  return objectSchema(
+    {
       appId: { type: "string" },
       appSecret: { type: "string" },
       replyMode: { type: "string", enum: ["thread", "direct"] },
       footer: { type: "string" },
       accounts: { type: "object", additionalProperties: accountSchema() },
     },
-    required: ["appId", "appSecret"],
-    additionalProperties: false,
-  };
+    { required: ["appId", "appSecret"] },
+  );
 }
 
 function feishuPlugin(schema = feishuSchema(), id = "openclaw-lark") {
@@ -65,12 +68,10 @@ function pluginDefaultsRegistry() {
   return registry(
     plugin({
       id: "opik",
-      configSchema: {
-        type: "object",
-        properties: { workspace: { type: "string", default: "default-workspace" } },
-        required: ["workspace"],
-        additionalProperties: true,
-      },
+      configSchema: objectSchema(
+        { workspace: { type: "string", default: "default-workspace" } },
+        { required: ["workspace"], additionalProperties: true },
+      ),
     }),
   );
 }
@@ -166,13 +167,10 @@ describe("config validation metadata", () => {
         channelCatalogMeta: { id: "telegram", label: "Telegram", blurb: "Telegram channel" },
         channelConfigs: {
           telegram: {
-            schema: {
-              type: "object",
-              properties: {
-                dmPolicy: { type: "string", enum: ["pairing", "allowlist"], default: "pairing" },
-              },
-              additionalProperties: true,
-            },
+            schema: objectSchema(
+              { dmPolicy: { type: "string", enum: ["pairing", "allowlist"], default: "pairing" } },
+              { additionalProperties: true },
+            ),
             uiHints: {},
           },
         },
@@ -223,14 +221,13 @@ describe("config validation metadata", () => {
   });
 
   it("replaces stale heartbeat declarations while preserving open custom fields", () => {
-    const schema = {
-      type: "object",
-      properties: {
+    const schema = objectSchema(
+      {
         heartbeatVisibility: false,
         accounts: { type: "object", additionalProperties: true },
       },
-      additionalProperties: true,
-    };
+      { additionalProperties: true },
+    );
     install(feishuPlugin(schema));
     const base = {
       customChannelField: true,
@@ -250,14 +247,7 @@ describe("config validation metadata", () => {
     install(
       feishuPlugin(feishuSchema(), "openclaw" + String.fromCharCode(10, 27) + "[31m-lark"),
       plugin({ id: "workspace-channel-labels", origin: "workspace", channels: ["feishu"] }),
-      feishuPlugin(
-        {
-          type: "object",
-          properties: { otherField: { type: "string" } },
-          additionalProperties: false,
-        },
-        "other-global-feishu",
-      ),
+      feishuPlugin(objectSchema({ otherField: { type: "string" } }), "other-global-feishu"),
     );
     const result = validateFeishu({ unsupportedField: true });
     expect(result.ok).toBe(false);
