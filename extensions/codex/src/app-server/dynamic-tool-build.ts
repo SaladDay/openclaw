@@ -375,7 +375,10 @@ export async function buildDynamicTools(
       }
       const webSearchPolicy =
         preparedPolicy ??
-        (await import("openclaw/plugin-sdk/agent-harness")).resolveWebSearchToolPolicy({
+        // Recovery can precede a warm Gateway projection when no policy was prepared.
+        (await (
+          await import("openclaw/plugin-sdk/agent-harness")
+        ).resolveWebSearchToolPolicyAsync({
           config: params.config,
           modelProvider: params.model.provider,
           modelId: params.modelId,
@@ -399,7 +402,7 @@ export async function buildDynamicTools(
           inputProvenance: params.inputProvenance,
           trustedInternalHandoff: params.trustedInternalHandoff,
           scheduledToolPolicy: params.scheduledToolPolicy,
-        });
+        }));
       persistentWebSearchAllowed =
         webSearchPolicy.persistentAllowed &&
         (persistentHostedWebSearchEligible ||
