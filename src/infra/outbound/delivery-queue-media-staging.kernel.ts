@@ -75,7 +75,6 @@ export function loadDeliveryQueueMediaRetentionSnapshotInDatabase(
       OUTBOUND_LEGACY_PREPARATION_QUEUE_NAME,
       OUTBOUND_DELIVERY_MIGRATION_QUEUE_NAME,
     ],
-    stagingQueueName: DELIVERY_QUEUE_MEDIA_STAGING_QUEUE_NAME,
     expireBeforeMs: params.expireBeforeMs,
   });
   // A failed migration backup still owns its original media, even without a runnable row.
