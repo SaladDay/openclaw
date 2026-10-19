@@ -122,54 +122,47 @@ it("flags reservation packages before they can pass plugin runtime verification"
   ).toEqual(["@openclaw/tavily-plugin@0.0.0 plugin npm package must include openclaw.plugin.json"]);
 });
 
-it("flags runtimeExtensions length mismatches", () => {
-  runtimeErrors(
-    "@openclaw/acpx",
+it.each([
+  [
+    "acpx",
     { extensions: ["./index.ts", "./tools.ts"], runtimeExtensions: ["./dist/index.js"] },
     ["dist/index.js"],
-    "@openclaw/acpx@2026.5.3 package.json openclaw.runtimeExtensions length (1) must match openclaw.extensions length (2)",
-  );
-});
-
-it("flags blank runtimeExtensions entries instead of falling back to inferred outputs", () => {
-  runtimeErrors(
-    "@openclaw/whatsapp",
+    "package.json openclaw.runtimeExtensions length (1) must match openclaw.extensions length (2)",
+  ],
+  [
+    "whatsapp",
     { extensions: ["./src/index.ts"], runtimeExtensions: [" "] },
     ["src/index.ts", "dist/index.js"],
-    "@openclaw/whatsapp@2026.5.3 package.json openclaw.runtimeExtensions[0] must be a non-empty string",
-  );
-});
-
-it("flags published plugin packages with TypeScript setup entries and no compiled setup runtime", () => {
-  runtimeErrors(
-    "@openclaw/line",
+    "package.json openclaw.runtimeExtensions[0] must be a non-empty string",
+  ],
+  [
+    "line",
     { ...runtimeExtension, setupEntry: "./setup-entry.ts" },
     ["index.ts", "dist/index.js", "setup-entry.ts"],
-    "@openclaw/line@2026.5.3 requires compiled runtime output for TypeScript entry ./setup-entry.ts: expected ./dist/setup-entry.js, ./dist/setup-entry.mjs, ./dist/setup-entry.cjs, ./setup-entry.js, ./setup-entry.mjs, ./setup-entry.cjs",
-  );
-});
-
-it("flags missing explicit runtimeSetupEntry outputs", () => {
-  runtimeErrors(
-    "@openclaw/matrix",
+    "requires compiled runtime output for TypeScript entry ./setup-entry.ts: expected ./dist/setup-entry.js, ./dist/setup-entry.mjs, ./dist/setup-entry.cjs, ./setup-entry.js, ./setup-entry.mjs, ./setup-entry.cjs",
+  ],
+  [
+    "matrix",
     {
       ...runtimeExtension,
       setupEntry: "./setup-entry.ts",
       runtimeSetupEntry: "./dist/setup-entry.js",
     },
     ["dist/index.js"],
-    "@openclaw/matrix@2026.5.3 runtime setup entry not found: ./dist/setup-entry.js",
-  );
-});
-
-it("flags runtimeSetupEntry without setupEntry", () => {
-  runtimeErrors(
-    "@openclaw/twitch",
+    "runtime setup entry not found: ./dist/setup-entry.js",
+  ],
+  [
+    "twitch",
     { ...runtimeExtension, runtimeSetupEntry: "./dist/setup-entry.js" },
     ["dist/index.js", "dist/setup-entry.js"],
-    "@openclaw/twitch@2026.5.3 package.json openclaw.runtimeSetupEntry requires openclaw.setupEntry",
-  );
-});
+    "package.json openclaw.runtimeSetupEntry requires openclaw.setupEntry",
+  ],
+] satisfies Array<[string, Record<string, unknown>, string[], string]>)(
+  "rejects invalid %s runtime entries",
+  (plugin, openclaw, files, error) => {
+    runtimeErrors(`@openclaw/${plugin}`, openclaw, files, `@openclaw/${plugin}@2026.5.3 ${error}`);
+  },
+);
 
 it("uses the final tarball filename from plain npm pack output", () => {
   const noisyOutput =
