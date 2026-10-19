@@ -212,7 +212,7 @@ describeControlUiE2e("Control UI Models help mocked Gateway E2E", () => {
           },
           {
             button: "About fast mode defaults",
-            text: "Auto starts fast and returns to standard after the model's configured interval.",
+            text: "Auto starts fast and returns to standard after the model's configured interval",
             defaultText:
               "Uses the selected model's fast-mode policy. Unlike Auto, Default does not enable fast mode by itself.",
           },

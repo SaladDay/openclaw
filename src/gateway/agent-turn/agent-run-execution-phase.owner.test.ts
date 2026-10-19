@@ -129,9 +129,10 @@ describe("startAgentRunExecution Gateway ownership", () => {
   it.each([
     "success",
     "startup failure",
+    "publication failure",
+    "publication and cleanup failure",
     "cleanup failure",
     "completed cleanup failure",
-    "publication failure",
     "prewriter abort",
   ] as const)("retains the exact run owner through runtime disposal: %s", async (outcome) => {
     const prewriter = outcome === "prewriter abort";
@@ -162,9 +163,13 @@ describe("startAgentRunExecution Gateway ownership", () => {
     const actualDispatch =
       await vi.importActual<typeof import("./agent-run-dispatch.js")>("./agent-run-dispatch.js");
     dispatchAgentRunFromGateway.mockImplementationOnce(actualDispatch.dispatchAgentRunFromGateway);
-    const publicationFault = new Error("Synthetic final publication denied");
-    if (outcome === "publication failure") {
-      vi.mocked(execution.params.io.emitFinal).mockImplementation(() => {
+    const publicationFault = new Error("Synthetic final response refusal");
+    const publicationFails =
+      outcome === "publication failure" || outcome === "publication and cleanup failure";
+    const cleanupFails =
+      outcome === "cleanup failure" || outcome === "publication and cleanup failure";
+    if (publicationFails) {
+      vi.mocked(execution.params.io.emitFinal).mockImplementationOnce(() => {
         throw publicationFault;
       });
     }
@@ -174,7 +179,7 @@ describe("startAgentRunExecution Gateway ownership", () => {
         ? disposal.wait
         : async () => {
             await disposal.wait();
-            if (outcome === "cleanup failure") {
+            if (cleanupFails) {
               throw cleanupFault;
             }
           },
@@ -294,15 +299,19 @@ describe("startAgentRunExecution Gateway ownership", () => {
         expect(collectNestedErrorCandidates(await observed)).toContain(callbackFault);
         expect(database?.isOpen).toBe(false);
         expect(nativeDisposals).toBe(1);
-      } else if (outcome === "cleanup failure") {
-        expect(await observed).toBe(cleanupFault);
+      } else if (outcome === "publication and cleanup failure") {
+        expect(collectNestedErrorCandidates(await observed)).toEqual(
+          expect.arrayContaining([publicationFault, cleanupFault]),
+        );
       } else if (outcome === "publication failure") {
         expect(await observed).toBe(publicationFault);
+      } else if (cleanupFails) {
+        expect(await observed).toBe(cleanupFault);
       } else {
         await completion;
       }
-      expect(rpcSourceTesting.has(execution.params.runId)).toBe(outcome === "cleanup failure");
-      if (outcome === "cleanup failure") {
+      expect(rpcSourceTesting.has(execution.params.runId)).toBe(cleanupFails);
+      if (cleanupFails) {
         expect(sourceSettled).not.toHaveBeenCalled();
       } else {
         expect(sourceSettled).toHaveBeenCalledOnce();
