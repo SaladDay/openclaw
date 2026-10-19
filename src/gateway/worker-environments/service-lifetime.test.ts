@@ -753,16 +753,39 @@ describe("worker environment service", () => {
     }
   });
 
-  it.each(["bootstrap", "inspection", "bundle", "npm", "refresh"] as const)(
+  it.each([
+    "provision",
+    "provision-node",
+    "bootstrap",
+    "inspection",
+    "bundle",
+    "npm",
+    "refresh",
+  ] as const)(
     "cancels startup %s before teardown and retains its actual producer until settlement",
     async (kind) => {
       const environmentId = "worker-owner-cancellation";
       const preparing = kind === "bundle" || kind === "npm";
-      const initial = await (kind === "refresh"
-        ? support.seedReadyNodeDesktop(environmentId)
-        : kind === "bootstrap" || preparing
-          ? support.seedBootstrapping(environmentId, kind === "npm" ? "npm" : "bundle")
-          : support.seedReady(environmentId));
+      const initial = await (kind === "provision" || kind === "provision-node"
+        ? (async () => {
+            await support.testState.store.createIntent({
+              environmentId,
+              providerId: "fake",
+              profileId: "development",
+              profileSnapshot: { settings: { region: "test" } },
+              provisionOperationId: `provision:${environmentId}`,
+            });
+            return support.testState.store.transition({
+              environmentId,
+              from: "requested",
+              to: "provisioning",
+            });
+          })()
+        : kind === "refresh"
+          ? support.seedReadyNodeDesktop(environmentId)
+          : kind === "bootstrap" || preparing
+            ? support.seedBootstrapping(environmentId, kind === "npm" ? "npm" : "bundle")
+            : support.seedReady(environmentId));
       const entered = createDeferred();
       const finishProducer = createDeferred();
       let activeSignal: AbortSignal | undefined;
@@ -792,6 +815,14 @@ describe("worker environment service", () => {
       }
       const destroy = vi.fn(async () => {});
       const provider = support.createProvider({
+        provision: async (_profile, _operationId, options) => {
+          if (kind === "provision-node") {
+            return { leaseId: "lease:provisioning", node: { deviceId: "node:provisioning" } };
+          }
+          await holdProducer(options?.signal);
+          options?.signal?.throwIfAborted();
+          return { leaseId: "lease:unexpected", ssh: support.SSH_ENDPOINT };
+        },
         inspect: async ({ signal }) => {
           if (kind === "inspection") {
             await holdProducer(signal);
