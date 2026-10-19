@@ -6,7 +6,7 @@ import { writeOpenAiResponsesText } from "../../test/helpers/openai-responses-ss
 import { createDeferred } from "../../test/helpers/promise.js";
 import { stripInternalRuntimeContext } from "../agents/internal-runtime-context.js";
 import { recoverRestartAbortedMainSessions } from "../agents/main-session-recovery/main-session-restart-recovery.js";
-import type { SessionEntry } from "../config/sessions.js";
+import type { InternalSessionEntry } from "../config/sessions.js";
 import {
   appendTranscriptMessage,
   loadSessionEntryReadOnly,
@@ -89,7 +89,12 @@ function readEntry(fixture: Fixture, sessionKey: string) {
 /** Seeds a main session exactly as a Gateway restart leaves an interrupted turn. */
 async function seedInterruptedSession(
   fixture: Fixture,
-  params: { sessionKey: string; sessionId: string; message: string; patch?: Partial<SessionEntry> },
+  params: {
+    sessionKey: string;
+    sessionId: string;
+    message: string;
+    patch?: Partial<InternalSessionEntry>;
+  },
 ) {
   const target = { storePath: fixture.storePath, sessionKey: params.sessionKey };
   await replaceSessionEntry(target, {
