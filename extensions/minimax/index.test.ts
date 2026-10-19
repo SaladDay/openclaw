@@ -298,7 +298,7 @@ describe("minimax provider hooks", () => {
           input: ["text", "image"],
           contextWindow: 1_000_000,
           reasoning: true,
-          compat: { codeMode: "preferred" },
+          compat: { codeMode: "preferred", supportsTemperature: false },
           cost: { input: 0.15, output: 0.6, cacheRead: 0.015, cacheWrite: 0 },
         }),
       );
