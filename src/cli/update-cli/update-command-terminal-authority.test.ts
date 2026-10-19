@@ -49,7 +49,6 @@ import {
   UpdateCommandFailure,
   UpdateCommandPendingRecoveryFailure,
 } from "./update-command-result.js";
-import * as service from "./update-command-service.js";
 import {
   hasDeferredUpdateCommandTerminalResult,
   withUpdateCommandTerminalResult,

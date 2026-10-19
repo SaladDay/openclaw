@@ -24,7 +24,6 @@ import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import * as snapshot from "../../infra/sqlite-snapshot-source.js";
 import * as temporaryRoot from "../../infra/tmp-openclaw-dir.js";
 import { readUpdateStateSchemaVersions } from "../../infra/update-candidate-state.js";
-import * as sentinel from "../../infra/update-control-plane-sentinel.js";
 import { createManagedHandoffLeaseStore } from "../../infra/update-managed-service-handoff-lease.js";
 import { prepareNativePackageStage } from "../../infra/update-native-package-stage.js";
 import {
