@@ -1,7 +1,3 @@
-/**
- * Tests for Nostr Profile HTTP Handler
- */
-
 import { IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
 import { expectDefined } from "@openclaw/normalization-core";
@@ -33,13 +29,11 @@ vi.mock("openclaw/plugin-sdk/plugin-runtime", async (importOriginal) => ({
   getPluginRuntimeGatewayRequestScope: runtimeScopeMock,
 }));
 
-// Mock the channel exports
 vi.mock("./channel.js", () => ({
   publishNostrProfile: vi.fn(),
   getNostrProfileState: vi.fn(),
 }));
 
-// Mock the import module
 vi.mock("./nostr-profile-import.js", () => ({
   importProfileFromRelays: vi.fn(),
   mergeProfiles: vi.fn((local, imported) => ({ ...imported, ...local })),
@@ -48,10 +42,6 @@ vi.mock("./nostr-profile-import.js", () => ({
 import { publishNostrProfile, getNostrProfileState } from "./channel.js";
 import { importProfileFromRelays } from "./nostr-profile-import.js";
 import { TEST_HEX_PUBLIC_KEY, TEST_SETUP_RELAY_URLS } from "./test-fixtures.js";
-
-// ============================================================================
-// Test Helpers
-// ============================================================================
 
 const TEST_PROFILE_RELAY_URL = expectDefined(TEST_SETUP_RELAY_URLS[0], "Nostr profile relay URL");
 
@@ -65,11 +55,7 @@ function setGatewayRuntimeScopes(scopes: readonly string[] | undefined): void {
     return;
   }
   runtimeScopeMock.mockReturnValue({
-    client: {
-      connect: {
-        scopes: [...scopes],
-      },
-    },
+    client: { connect: { scopes: [...scopes] } },
   });
 }
 
@@ -99,24 +85,18 @@ function createMockRequest(
   req.url = url;
   req.headers = { host: "localhost:3000", ...opts?.headers };
 
-  if (body) {
-    const bodyStr = JSON.stringify(body);
-    process.nextTick(() => {
-      req.emit("data", Buffer.from(bodyStr));
-      req.emit("end");
-    });
-  } else {
-    process.nextTick(() => {
-      req.emit("end");
-    });
-  }
+  process.nextTick(() => {
+    if (body) {
+      req.emit("data", Buffer.from(JSON.stringify(body)));
+    }
+    req.emit("end");
+  });
 
   return req;
 }
 
 type MockResponse = {
-  _getData: () => string;
-  _getStatusCode: () => number;
+  bodyText: () => string;
   write: (chunk: unknown) => boolean;
   end: (chunk?: unknown) => MockResponse;
   statusCode: number;
@@ -124,10 +104,8 @@ type MockResponse = {
 
 function createMockResponse(): MockResponse {
   let data = "";
-  let statusCode = 200;
   const res = Object.assign(new ServerResponse({} as IncomingMessage), {
-    _getData: () => data,
-    _getStatusCode: () => statusCode,
+    bodyText: () => data,
   }) as MockResponse;
 
   res.write = function (chunk: unknown) {
@@ -142,13 +120,6 @@ function createMockResponse(): MockResponse {
     return this;
   };
 
-  Object.defineProperty(res, "statusCode", {
-    get: () => statusCode,
-    set: (code: number) => {
-      statusCode = code;
-    },
-  });
-
   return res;
 }
 
@@ -160,23 +131,19 @@ function createMockContext(overrides?: Partial<NostrProfileHttpContext>): NostrP
       pubkey: TEST_HEX_PUBLIC_KEY,
       relays: [TEST_PROFILE_RELAY_URL],
     }),
-    log: {
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    },
+    log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     ...overrides,
   };
 }
 
 function createProfileHttpHarness(
   method: string,
-  url: string,
   options?: {
     body?: unknown;
     ctx?: Partial<NostrProfileHttpContext>;
     req?: Parameters<typeof createMockRequest>[3];
   },
+  url = "/api/channels/nostr/default/profile" + (method === "POST" ? "/import" : ""),
 ) {
   const ctx = createMockContext(options?.ctx);
   const handler = createNostrProfileHttpHandler(ctx);
@@ -192,8 +159,8 @@ function createProfileHttpHarness(
 }
 
 function expectOkResponse(res: MockResponse) {
-  expect(res["_getStatusCode"]()).toBe(200);
-  const data = JSON.parse(res["_getData"]());
+  expect(res.statusCode).toBe(200);
+  const data = JSON.parse(res.bodyText());
   expect(data.ok).toBe(true);
   return data;
 }
@@ -201,10 +168,7 @@ function expectOkResponse(res: MockResponse) {
 function mockSuccessfulProfileImport() {
   vi.mocked(importProfileFromRelays).mockResolvedValue({
     ok: true,
-    profile: {
-      name: "imported",
-      displayName: "Imported User",
-    },
+    profile: { name: "imported", displayName: "Imported User" },
     event: {
       id: "evt123",
       pubkey: TEST_HEX_PUBLIC_KEY,
@@ -215,30 +179,24 @@ function mockSuccessfulProfileImport() {
   });
 }
 
-async function expectAdminScopeRejected(params: {
-  scopes: readonly string[] | undefined;
-  method: string;
-  url: string;
-  body: unknown;
-  expectOperationNotCalled: () => void;
-}) {
-  setGatewayRuntimeScopes(params.scopes);
-  const { ctx, res, run } = createProfileHttpHarness(params.method, params.url, {
-    body: params.body,
-  });
-
+async function expectAdminScopeRejected(scopes: readonly string[] | undefined) {
+  setGatewayRuntimeScopes(scopes);
+  const { ctx, res, run } = createProfileHttpHarness("POST", { body: { autoMerge: true } });
   await run();
-
-  expect(res["_getStatusCode"]()).toBe(403);
-  const data = JSON.parse(res["_getData"]());
-  expect(data.error).toBe("missing scope: operator.admin");
-  params.expectOperationNotCalled();
+  expect(res.statusCode).toBe(403);
+  expect(JSON.parse(res.bodyText()).error).toBe("missing scope: operator.admin");
+  expect(importProfileFromRelays).not.toHaveBeenCalled();
   expect(ctx.updateConfigProfile).not.toHaveBeenCalled();
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
+async function expectMutationRejected(
+  method: string,
+  req: NonNullable<Parameters<typeof createMockRequest>[3]>,
+) {
+  const { res, run } = createProfileHttpHarness(method, { body: { name: "attacker" }, req });
+  await run();
+  expect(res.statusCode).toBe(403);
+}
 
 describe("nostr-profile-http", () => {
   beforeEach(() => {
@@ -249,26 +207,21 @@ describe("nostr-profile-http", () => {
 
   describe("route matching", () => {
     it("returns false for non-nostr paths", async () => {
-      const { run } = createProfileHttpHarness("GET", "/api/channels/telegram/profile");
+      const { run } = createProfileHttpHarness("GET", undefined, "/api/channels/telegram/profile");
       const result = await run();
-
       expect(result).toBe(false);
     });
 
     it("returns false for paths without accountId", async () => {
-      const { run } = createProfileHttpHarness("GET", "/api/channels/nostr/");
+      const { run } = createProfileHttpHarness("GET", undefined, "/api/channels/nostr/");
       const result = await run();
-
       expect(result).toBe(false);
     });
 
     it("handles /api/channels/nostr/:accountId/profile", async () => {
-      const { run } = createProfileHttpHarness("GET", "/api/channels/nostr/default/profile");
-
+      const { run } = createProfileHttpHarness("GET");
       vi.mocked(getNostrProfileState).mockResolvedValue(null);
-
       const result = await run();
-
       expect(result).toBe(true);
     });
   });
@@ -311,22 +264,17 @@ describe("nostr-profile-http", () => {
     }
 
     function expectBadRequestResponse(res: ReturnType<typeof createMockResponse>) {
-      expect(res["_getStatusCode"]()).toBe(400);
-      const data = JSON.parse(res["_getData"]());
+      expect(res.statusCode).toBe(400);
+      const data = JSON.parse(res.bodyText());
       expect(data.ok).toBe(false);
       return data;
     }
 
     async function expectPrivatePictureRejected(pictureUrl: string) {
-      const { res, run } = createProfileHttpHarness("PUT", "/api/channels/nostr/default/profile", {
-        body: {
-          name: "hacker",
-          picture: pictureUrl,
-        },
+      const { res, run } = createProfileHttpHarness("PUT", {
+        body: { name: "hacker", picture: pictureUrl },
       });
-
       await run();
-
       const data = expectBadRequestResponse(res);
       expect(data.error).toContain("private");
     }
@@ -398,23 +346,13 @@ describe("nostr-profile-http", () => {
     });
 
     it("rejects profile mutation with cross-site sec-fetch-site header", async () => {
-      const { res, run } = createProfileHttpHarness("PUT", "/api/channels/nostr/default/profile", {
-        body: { name: "attacker" },
-        req: { headers: { "sec-fetch-site": "cross-site" } },
-      });
-
-      await run();
-      expect(res["_getStatusCode"]()).toBe(403);
+      await expectMutationRejected("PUT", { headers: { "sec-fetch-site": "cross-site" } });
     });
 
     it("rejects profile mutation when forwarded client ip is non-loopback", async () => {
-      const { res, run } = createProfileHttpHarness("PUT", "/api/channels/nostr/default/profile", {
-        body: { name: "attacker" },
-        req: { headers: { "x-forwarded-for": "203.0.113.99, 127.0.0.1" } },
+      await expectMutationRejected("PUT", {
+        headers: { "x-forwarded-for": "203.0.113.99, 127.0.0.1" },
       });
-
-      await run();
-      expect(res["_getStatusCode"]()).toBe(403);
     });
 
     it("rejects profile mutation when gateway caller is missing operator.admin", async () => {
@@ -446,15 +384,10 @@ describe("nostr-profile-http", () => {
     });
 
     it("rejects non-https URLs", async () => {
-      const { res, run } = createProfileHttpHarness("PUT", "/api/channels/nostr/default/profile", {
-        body: {
-          name: "test",
-          picture: "http://example.com/pic.jpg",
-        },
+      const { res, run } = createProfileHttpHarness("PUT", {
+        body: { name: "test", picture: "http://example.com/pic.jpg" },
       });
-
       await run();
-
       const data = expectBadRequestResponse(res);
       // The schema validation catches non-https URLs before SSRF check
       expect(data.error).toBe("Validation failed");
@@ -463,27 +396,18 @@ describe("nostr-profile-http", () => {
     });
 
     it("does not persist if all relays fail", async () => {
-      const { ctx, res, run } = createProfileHttpHarness(
-        "PUT",
-        "/api/channels/nostr/default/profile",
-        {
-          body: {
-            name: "test",
-          },
-        },
-      );
-
+      const { ctx, res, run } = createProfileHttpHarness("PUT", {
+        body: { name: "test" },
+      });
       vi.mocked(publishNostrProfile).mockResolvedValue({
         eventId: "event123",
         createdAt: 1234567890,
         successes: [],
         failures: [{ relay: TEST_PROFILE_RELAY_URL, error: "timeout" }],
       });
-
       await run();
-
-      expect(res["_getStatusCode"]()).toBe(200);
-      const data = JSON.parse(res["_getData"]());
+      expect(res.statusCode).toBe(200);
+      const data = JSON.parse(res.bodyText());
       expect(data.persisted).toBe(false);
       expect(ctx.updateConfigProfile).not.toHaveBeenCalled();
     });
@@ -495,20 +419,16 @@ describe("nostr-profile-http", () => {
       for (let i = 0; i < 6; i++) {
         const { res, run } = createProfileHttpHarness(
           "PUT",
+          { body: { name: `user${i}` } },
           "/api/channels/nostr/rate-test/profile",
-          {
-            body: {
-              name: `user${i}`,
-            },
-          },
         );
         await run();
 
         if (i < 5) {
           expectOkResponse(res);
         } else {
-          expect(res["_getStatusCode"]()).toBe(429);
-          const data = JSON.parse(res["_getData"]());
+          expect(res.statusCode).toBe(429);
+          const data = JSON.parse(res.bodyText());
           expect(data.error).toContain("Rate limit");
         }
       }
@@ -523,98 +443,42 @@ describe("nostr-profile-http", () => {
     }
 
     it("imports profile from relays", async () => {
-      const { res, run } = createProfileHttpHarness(
-        "POST",
-        "/api/channels/nostr/default/profile/import",
-        { body: {} },
-      );
-
+      const { res, run } = createProfileHttpHarness("POST", { body: {} });
       mockSuccessfulProfileImport();
-
       await run();
-
       const data = expectImportSuccessResponse(res);
       expect(data.saved).toBe(false); // autoMerge not requested
     });
 
     it("rejects import mutation from non-loopback remote address", async () => {
-      const { res, run } = createProfileHttpHarness(
-        "POST",
-        "/api/channels/nostr/default/profile/import",
-        {
-          body: {},
-          req: { remoteAddress: "203.0.113.10" },
-        },
-      );
-
-      await run();
-      expect(res["_getStatusCode"]()).toBe(403);
+      await expectMutationRejected("POST", { remoteAddress: "203.0.113.10" });
     });
 
     it("rejects cross-origin import mutation attempts", async () => {
-      const { res, run } = createProfileHttpHarness(
-        "POST",
-        "/api/channels/nostr/default/profile/import",
-        {
-          body: {},
-          req: { headers: { origin: "https://evil.example" } },
-        },
-      );
-
-      await run();
-      expect(res["_getStatusCode"]()).toBe(403);
+      await expectMutationRejected("POST", { headers: { origin: "https://evil.example" } });
     });
 
     it("rejects import mutation when x-real-ip is non-loopback", async () => {
-      const { res, run } = createProfileHttpHarness(
-        "POST",
-        "/api/channels/nostr/default/profile/import",
-        {
-          body: {},
-          req: { headers: { "x-real-ip": "198.51.100.55" } },
-        },
-      );
-
-      await run();
-      expect(res["_getStatusCode"]()).toBe(403);
+      await expectMutationRejected("POST", { headers: { "x-real-ip": "198.51.100.55" } });
     });
 
     it("rejects profile import when gateway caller is missing operator.admin", async () => {
-      await expectAdminScopeRejected({
-        scopes: ["operator.read"],
-        method: "POST",
-        url: "/api/channels/nostr/default/profile/import",
-        body: { autoMerge: true },
-        expectOperationNotCalled: () => expect(importProfileFromRelays).not.toHaveBeenCalled(),
-      });
+      await expectAdminScopeRejected(["operator.read"]);
     });
 
     it("rejects profile import when gateway scope context is missing", async () => {
-      await expectAdminScopeRejected({
-        scopes: undefined,
-        method: "POST",
-        url: "/api/channels/nostr/default/profile/import",
-        body: { autoMerge: true },
-        expectOperationNotCalled: () => expect(importProfileFromRelays).not.toHaveBeenCalled(),
-      });
+      await expectAdminScopeRejected(undefined);
     });
 
     it("auto-merges when requested", async () => {
-      const { ctx, res, run } = createProfileHttpHarness(
-        "POST",
-        "/api/channels/nostr/default/profile/import",
-        {
-          body: { autoMerge: true },
-          ctx: {
-            getConfigProfile: vi.fn().mockReturnValue({ about: "local bio" }),
-          },
+      const { ctx, res, run } = createProfileHttpHarness("POST", {
+        body: { autoMerge: true },
+        ctx: {
+          getConfigProfile: vi.fn().mockReturnValue({ about: "local bio" }),
         },
-      );
-
+      });
       mockSuccessfulProfileImport();
-
       await run();
-
       const data = expectImportSuccessResponse(res);
       expect(data.saved).toBe(true);
       expect(ctx.updateConfigProfile).toHaveBeenCalled();
@@ -623,19 +487,12 @@ describe("nostr-profile-http", () => {
     it("returns error when account not found", async () => {
       const { res, run } = createProfileHttpHarness(
         "POST",
+        { body: {}, ctx: { getAccountInfo: vi.fn().mockReturnValue(null) } },
         "/api/channels/nostr/unknown/profile/import",
-        {
-          body: {},
-          ctx: {
-            getAccountInfo: vi.fn().mockReturnValue(null),
-          },
-        },
       );
-
       await run();
-
-      expect(res["_getStatusCode"]()).toBe(404);
-      const data = JSON.parse(res["_getData"]());
+      expect(res.statusCode).toBe(404);
+      const data = JSON.parse(res.bodyText());
       expect(data.error).toContain("not found");
     });
   });
