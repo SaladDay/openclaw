@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
+  acquireSessionMcpRuntime,
   disposeAllSessionMcpRuntimes,
   reloadSessionMcpRuntimes,
 } from "./agent-bundle-mcp-manager-api.js";
+import { bindSessionMcpRuntimeTestScheduler } from "./agent-bundle-mcp-manager.test-support.js";
 import { createSessionMcpRuntime } from "./agent-bundle-mcp-runtime.js";
 import type { SessionMcpRequesterScope, SessionMcpRuntime } from "./agent-bundle-mcp-types.js";
 import { OpenClawStreamableHTTPClientTransport } from "./mcp-http-transport.js";
+import { buildMcpCatalogNotices } from "./tools-effective-mcp-inventory.js";
 
 const { resolveTransport, warn } = vi.hoisted(() => ({
   resolveTransport: vi.fn(),
@@ -24,6 +27,7 @@ vi.mock("./embedded-agent-mcp.js", () => ({
 const runtimes: SessionMcpRuntime[] = [];
 let initializes = 0;
 let reachable = false;
+let invalidListing = false;
 let listToolsGate: Promise<void> | undefined;
 
 beforeEach(() => {
@@ -31,9 +35,10 @@ beforeEach(() => {
   vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
   initializes = 0;
   reachable = false;
+  invalidListing = false;
   listToolsGate = undefined;
   warn.mockClear();
-  resolveTransport.mockImplementation(() => ({
+  resolveTransport.mockImplementation((serverName: string) => ({
     transport: new OpenClawStreamableHTTPClientTransport(new URL("https://mcp.invalid/mcp"), {
       fetch: async (_input, init) => {
         if (init?.method !== "POST") {
@@ -45,7 +50,7 @@ beforeEach(() => {
         const message = JSON.parse(init.body) as { id?: number; method: string };
         if (message.method === "initialize") {
           initializes += 1;
-          if (!reachable) {
+          if (!reachable && serverName === "remote") {
             return new Promise<Response>((_resolve, reject) => {
               init.signal?.addEventListener(
                 "abort",
@@ -58,7 +63,7 @@ beforeEach(() => {
         if (message.id === undefined) {
           return new Response(null, { status: 202 });
         }
-        if (message.method === "tools/list") {
+        if (message.method === "tools/list" && serverName === "remote") {
           await listToolsGate;
         }
         return new Response(
@@ -72,7 +77,17 @@ beforeEach(() => {
                     capabilities: { tools: {} },
                     serverInfo: { name: "fixture", version: "1" },
                   }
-                : { tools: [{ name: "probe", inputSchema: { type: "object" } }] },
+                : {
+                    tools: [
+                      {
+                        name: serverName === "remote" ? "probe" : "healthy_tool",
+                        inputSchema:
+                          invalidListing && serverName === "remote"
+                            ? { type: "array", items: { type: "number" } }
+                            : { type: "object" },
+                      },
+                    ],
+                  },
           }),
           { headers: { "content-type": "application/json" } },
         );
@@ -115,84 +130,149 @@ async function discover(runtime: SessionMcpRuntime) {
   return { catalog: await pending, waitedMs: Date.now() - started };
 }
 
-it("allows only the first failing runtime one early catalog retry before backing off", async () => {
+it("bounds the first connection and never waits for known-failed retries", async () => {
   const runtime = makeRuntime();
-  await discover(runtime);
+  expect((await discover(runtime)).waitedMs).toBe(30_000);
   expect((await discover(makeRuntime())).waitedMs).toBe(0);
   await vi.advanceTimersByTimeAsync(4_999);
-  await discover(runtime);
+  expect((await discover(runtime)).waitedMs).toBe(0);
   expect(initializes).toBe(1);
 
   await vi.advanceTimersByTimeAsync(1);
-  const retried = await discover(runtime);
-  expect(retried.waitedMs).toBe(30_000);
+  expect((await discover(runtime)).waitedMs).toBe(0);
   expect(initializes).toBe(2);
-  expect(retried.catalog.diagnostics?.[0]?.message).toContain(
+  // New sessions must not join the pending retry, even after their cooldown expires.
+  await vi.advanceTimersByTimeAsync(25_000);
+  expect((await discover(makeRuntime())).waitedMs).toBe(0);
+  await vi.advanceTimersByTimeAsync(5_000);
+  const failedRetry = await discover(runtime);
+  expect(failedRetry.waitedMs).toBe(0);
+  expect(failedRetry.catalog.diagnostics?.[0]?.message).toContain(
     new Date(Date.now() + 60_000).toISOString(),
   );
-
-  await vi.advanceTimersByTimeAsync(5_000);
-  await discover(runtime);
-  expect((await discover(makeRuntime())).waitedMs).toBe(0);
-  expect(initializes).toBe(2);
   expect(warn).toHaveBeenCalledTimes(2);
 });
 
-it("lists recovered tools on the first turn after a failed startup retry is due", async () => {
+it("keeps one inventory notice per failure episode and publishes recovery next turn", async () => {
   const runtime = makeRuntime();
   const failed = await discover(runtime);
   expect(failed.catalog.tools).toEqual([]);
-  expect(failed.catalog.diagnostics).toEqual([
-    expect.objectContaining({
-      serverName: "remote",
-      message: expect.stringContaining("server unavailable; retry after"),
-    }),
+  const notices = buildMcpCatalogNotices(failed.catalog);
+  expect(notices).toEqual([
+    expect.objectContaining({ id: "mcp-server-diagnostic:remote", severity: "warning" }),
   ]);
+  expect(buildMcpCatalogNotices(await runtime.getCatalog())).toEqual(notices);
   reachable = true;
-  await vi.advanceTimersByTimeAsync(4_999);
-  expect((await runtime.getCatalog()).tools).toEqual([]);
-  expect(initializes).toBe(1);
-
-  await vi.advanceTimersByTimeAsync(1);
+  await vi.advanceTimersByTimeAsync(5_000);
   const listing = Promise.withResolvers<void>();
   listToolsGate = listing.promise;
-  const turn = runtime.getCatalog();
-  await vi.advanceTimersByTimeAsync(0);
-  listing.resolve();
-  const recovered = await turn;
-  expect(recovered.tools.map((tool) => tool.toolName)).toEqual(["probe"]);
-  expect(recovered.diagnostics).toBeUndefined();
+  const turn = await discover(runtime);
+  expect(turn.waitedMs).toBe(0);
+  expect(turn.catalog.tools).toEqual([]);
+  expect(buildMcpCatalogNotices(turn.catalog)).toEqual(notices);
   expect(initializes).toBe(2);
+
+  listing.resolve();
+  await vi.advanceTimersByTimeAsync(0);
+  const recovered = await runtime.getCatalog();
+  expect(recovered.tools.map((tool) => tool.toolName)).toEqual(["probe"]);
+  expect(buildMcpCatalogNotices(recovered)).toEqual([]);
+  expect(turn.catalog.tools).toEqual([]);
 });
 
-it("doubles the retry interval to ten minutes and resets it after recovery", async () => {
-  for (const delay of [30_000, 60_000, 120_000, 240_000, 480_000, 600_000, 600_000]) {
-    const runtime = makeRuntime();
+it("retries failed listings in the background without stalling healthy siblings", async () => {
+  reachable = true;
+  invalidListing = true;
+  const runtime = createSessionMcpRuntime({
+    sessionId: "listing-retry",
+    workspaceDir: "/workspace",
+    cfg: {
+      mcp: {
+        servers: {
+          remote: { url: "https://mcp.invalid/mcp" },
+          healthy: { url: "https://healthy.invalid/mcp" },
+        },
+      },
+    },
+  });
+  runtimes.push(runtime);
+  const failed = await runtime.getCatalog();
+  expect(failed.tools.map((tool) => tool.toolName)).toEqual(["healthy_tool"]);
+  expect(failed.diagnostics?.[0]?.serverName).toBe("remote");
+
+  invalidListing = false;
+  const listing = Promise.withResolvers<void>();
+  listToolsGate = listing.promise;
+  await vi.advanceTimersByTimeAsync(5_000);
+  const turn = await discover(runtime);
+  expect(turn.waitedMs).toBe(0);
+  expect(turn.catalog.tools.map((tool) => tool.toolName)).toEqual(["healthy_tool"]);
+  listing.resolve();
+  await vi.advanceTimersByTimeAsync(0);
+  const recovered = await runtime.getCatalog();
+  expect(recovered.tools.map((tool) => tool.toolName)).toEqual(["healthy_tool", "probe"]);
+  expect(recovered.diagnostics).toBeUndefined();
+  expect(initializes).toBe(3);
+});
+
+it("clears inherited failure cooldowns when the live runtime is explicitly reloaded", async () => {
+  await bindSessionMcpRuntimeTestScheduler();
+  const params = {
+    workspaceDir: "/workspace",
+    agentDir: "/agent",
+    cfg: { mcp: { servers: { remote: { url: "https://mcp.invalid/mcp" } } } },
+  };
+  const first = await acquireSessionMcpRuntime({ ...params, sessionId: "first" });
+  const second = await acquireSessionMcpRuntime({ ...params, sessionId: "second" });
+  try {
+    await discover(first.runtime);
+    expect((await discover(second.runtime)).waitedMs).toBe(0);
+    reachable = true;
+    await reloadSessionMcpRuntimes({ cfg: params.cfg });
+    const reloaded = await second.runtime.getCatalog();
+    expect(reloaded.tools.map((tool) => tool.toolName)).toEqual(["probe"]);
+  } finally {
+    first.releaseLease();
+    second.releaseLease();
+  }
+});
+
+it("doubles background retry intervals to ten minutes and resets after recovery", async () => {
+  const runtime = makeRuntime();
+  await discover(runtime);
+  await vi.advanceTimersByTimeAsync(5_000);
+  for (const delay of [60_000, 120_000, 240_000, 480_000, 600_000, 600_000]) {
+    expect((await discover(runtime)).waitedMs).toBe(0);
+    await vi.advanceTimersByTimeAsync(30_000);
     const failed = await discover(runtime);
-    expect(failed.waitedMs).toBe(30_000);
-    expect(failed.catalog.tools).toEqual([]);
-    expect(failed.catalog.diagnostics?.[0]?.message).toContain("timed out");
     expect(failed.catalog.diagnostics?.[0]?.message).toContain(
-      `server unavailable; retry after ${new Date(Date.now() + (delay === 30_000 ? 5_000 : delay)).toISOString()}. Check server reachability`,
+      `server unavailable; retry after ${new Date(Date.now() + delay).toISOString()}. Check server reachability`,
     );
-    await runtime.dispose();
     const attempts = initializes;
     await vi.advanceTimersByTimeAsync(delay - 1);
     expect((await discover(makeRuntime())).waitedMs).toBe(0);
     expect(initializes).toBe(attempts);
-    expect(warn).toHaveBeenCalledTimes(attempts);
     await vi.advanceTimersByTimeAsync(1);
   }
   reachable = true;
-  const recovered = await discover(makeRuntime());
-  expect(recovered.catalog.tools.map((tool) => tool.toolName)).toEqual(["probe"]);
-  expect(recovered.catalog.diagnostics).toBeUndefined();
+  expect((await discover(runtime)).waitedMs).toBe(0);
+  await vi.advanceTimersByTimeAsync(0);
+  expect((await runtime.getCatalog()).tools.map((tool) => tool.toolName)).toEqual(["probe"]);
   reachable = false;
   const failedAgain = await discover(makeRuntime());
   expect(failedAgain.waitedMs).toBe(30_000);
   expect(failedAgain.catalog.diagnostics?.[0]?.message).toContain(
     new Date(Date.now() + 5_000).toISOString(),
   );
+});
+
+it("preserves known failure when a session retires during a background retry", async () => {
+  const runtime = makeRuntime();
+  await discover(runtime);
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect((await discover(runtime)).waitedMs).toBe(0);
+  await runtime.dispose();
+  expect((await discover(makeRuntime())).waitedMs).toBe(0);
 });
 
 it("shares a single failed startup across concurrent sessions", async () => {
