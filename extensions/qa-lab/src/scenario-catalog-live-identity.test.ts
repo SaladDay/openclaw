@@ -5,18 +5,19 @@ import { runLoadedScenarioFlow } from "./scenario-flow-runner.test-support.js";
 import { selectQaFlowSuiteScenarios } from "./suite-planning.js";
 
 const SCENARIO = "live-frontier-execution-identity";
-type Fault =
-  | "none"
-  | "mock-lane"
-  | "model-fallback"
-  | "missing-identity"
-  | "raw-runtime"
-  | "wrong-run"
-  | "enforced-admission"
-  | "prompt-leak"
-  | "wrong-cli-execution"
-  | "reused-context"
-  | "restart-drift";
+const identityCases = [
+  ["mock-lane", "requires live-frontier"],
+  ["model-fallback", "selected live provider and model"],
+  ["missing-identity", "test condition was not met"],
+  ["raw-runtime", "pseudonymized runtime identity"],
+  ["wrong-run", "exact authenticated ingress"],
+  ["enforced-admission", "overstated admission authority"],
+  ["prompt-leak", "exposed private content"],
+  ["wrong-cli-execution", "different live execution"],
+  ["reused-context", "reused one execution identity"],
+  ["restart-drift", "changed across Gateway replacement"],
+] as const;
+type Fault = "none" | (typeof identityCases)[number][0];
 
 function runIdentityFlow(fault: Fault = "none") {
   let turn = 0;
@@ -180,20 +181,12 @@ describe("live-frontier execution identity qualification", () => {
     expect(fixture.restart).toHaveBeenCalledOnce();
   });
 
-  it.each([
-    ["mock-lane", "requires live-frontier"],
-    ["model-fallback", "selected live provider and model"],
-    ["missing-identity", "test condition was not met"],
-    ["raw-runtime", "pseudonymized runtime identity"],
-    ["wrong-run", "exact authenticated ingress"],
-    ["enforced-admission", "overstated admission authority"],
-    ["prompt-leak", "exposed private content"],
-    ["wrong-cli-execution", "different live execution"],
-    ["reused-context", "reused one execution identity"],
-    ["restart-drift", "changed across Gateway replacement"],
-  ] as const)("rejects %s evidence from the same executable flow", async (fault, message) => {
-    await expect(runIdentityFlow(fault).result).rejects.toThrow(message);
-  });
+  it.each(identityCases)(
+    "rejects %s evidence from the same executable flow",
+    async (fault, message) => {
+      await expect(runIdentityFlow(fault).result).rejects.toThrow(message);
+    },
+  );
 });
 
 function pseudonym(digit: string) {

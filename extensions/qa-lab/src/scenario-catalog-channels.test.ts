@@ -109,17 +109,12 @@ function runUnlinkedFanoutScenario() {
 describe("qa scenario catalog channel contracts", () => {
   it("routes native command session targeting through Crabline Telegram", () => {
     const scenario = readQaScenarioById("native-command-session-target");
-    const config = readQaScenarioExecutionConfig("native-command-session-target") as
-      | {
-          requiredChannelDriver?: string;
-          requiredProviderMode?: string;
-        }
-      | undefined;
-
-    expect(scenario.execution.channel).toBe("telegram");
-    expect(scenario.execution.channels).toEqual(["telegram"]);
-    expect(config?.requiredProviderMode).toBe("mock-openai");
-    expect(config?.requiredChannelDriver).toBe("crabline");
+    const { channel, channels } = scenario.execution;
+    expect({ channel, channels }).toEqual({ channel: "telegram", channels: ["telegram"] });
+    expect(readQaScenarioExecutionConfig("native-command-session-target")).toMatchObject({
+      requiredProviderMode: "mock-openai",
+      requiredChannelDriver: "crabline",
+    });
     const flow = JSON.stringify(requireFlowScenario(scenario).execution.flow);
     expect(flow).toContain("transport.buildAgentDelivery");
     expect(flow).toContain("peer: { kind: 'group', id: delivery.replyTo }");

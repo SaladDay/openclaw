@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createQaBusState } from "./bus-state.js";
 import { readQaScenarioById } from "./scenario-catalog.js";
 import { runLoadedScenarioFlow } from "./scenario-flow-runner.test-support.js";
@@ -14,26 +14,14 @@ function createMatrixSessionEntry(
   updatedAt: number,
   nativeDirectUserId = matrixDriverId,
 ) {
-  const context = { channel: "matrix", to: `room:${roomId}`, accountId: "sut" };
   return {
     sessionId,
     updatedAt,
-    chatType: "direct",
     delivery: {
       kind: "external",
-      route: {
-        channel: "matrix",
-        accountId: "sut",
-        target: { to: context.to, chatType: "direct" },
-      },
-      context,
+      context: { channel: "matrix", accountId: "sut" },
       origin: {
-        provider: "matrix",
-        surface: "matrix",
-        accountId: "sut",
         chatType: "direct",
-        from: `matrix:${nativeDirectUserId}`,
-        to: context.to,
         nativeChannelId: roomId,
         nativeDirectUserId,
       },
@@ -62,7 +50,7 @@ async function runMatrixSessionScenario(
   const secondarySessionKey = sessionKey(secondaryRoomId);
   const primarySessionId = "matrix-session-primary";
 
-  const readRawQaSessionStore = vi.fn(async () => {
+  const readRawQaSessionStore = async () => {
     const inboundMessages = state
       .getSnapshot()
       .messages.filter((message) => message.direction === "inbound");
@@ -82,7 +70,7 @@ async function runMatrixSessionScenario(
             ),
           }),
     };
-  });
+  };
 
   let outboundWaitCount = 0;
   const transport = {

@@ -46,7 +46,6 @@ describe("system-agent delegation scenario tool policy", () => {
       entries: { "qa-channel": { enabled: true } },
     };
     const scenario = readQaScenarioById("system-agent-delegation-generation");
-    // Match the suite owner's merge of validated catalog patches into the typed QA config.
     config = applyQaMergePatch(baseline, scenario.gatewayConfigPatch ?? {}) as OpenClawConfig;
   });
 
@@ -57,25 +56,7 @@ describe("system-agent delegation scenario tool policy", () => {
     await fs.rm(workspaceDir, { recursive: true, force: true });
   });
 
-  function authorizationFor(
-    toolConfig: OpenClawConfig,
-    senderId = "alice",
-    provider = "qa-channel",
-  ) {
-    return resolveCommandAuthorization({
-      cfg: toolConfig,
-      ctx: {
-        Provider: provider,
-        Surface: provider,
-        AccountId: "default",
-        SenderId: senderId,
-        ChatType: "group",
-      },
-      commandAuthorized: true,
-    });
-  }
-
-  function toolsFor(
+  function policyFor(
     toolConfig: OpenClawConfig,
     options: {
       senderId?: string;
@@ -83,47 +64,64 @@ describe("system-agent delegation scenario tool policy", () => {
       conversationToolPolicy?: { deny: string[] };
     } = {},
   ) {
-    const authority = authorizationFor(toolConfig, options.senderId, options.provider);
-    return createOpenClawCodingTools({
+    const provider = options.provider ?? "qa-channel";
+    const { senderIsOwner } = resolveCommandAuthorization({
+      cfg: toolConfig,
+      ctx: {
+        Provider: provider,
+        Surface: provider,
+        AccountId: "default",
+        SenderId: options.senderId ?? "alice",
+        ChatType: "group",
+      },
+      commandAuthorized: true,
+    });
+    const tools = createOpenClawCodingTools({
       config: toolConfig,
       agentId: "qa",
       sessionKey: "agent:qa:qa-channel:group:qa-system-agent-delegation",
-      messageProvider: options.provider ?? "qa-channel",
-      senderIsOwner: authority.senderIsOwner,
+      messageProvider: provider,
+      senderIsOwner,
       modelProvider: "mock-openai",
       modelId: "gpt-5.6-luna",
       workspaceDir,
       cwd: workspaceDir,
       conversationToolPolicy: options.conversationToolPolicy,
     });
+    return {
+      senderIsOwner,
+      names: tools.map((tool) => tool.name),
+      delegate: tools.find((tool) => tool.name === "openclaw"),
+    };
   }
 
-  it("grants the real delegate to the scenario's explicitly authorized sender", () => {
-    expect(authorizationFor(baseline).senderIsOwner).toBe(false);
-    expect(toolsFor(baseline).map((tool) => tool.name)).not.toContain("openclaw");
-    expect(authorizationFor(config).senderIsOwner).toBe(true);
-    const tools = toolsFor(config);
-    expect(tools.map((tool) => tool.name)).toContain("read");
-    expect(tools.find((tool) => tool.name === "openclaw")?.catalogMode).toBe("direct-only");
-    expect(config.tools).toEqual(baseline.tools);
-    expect(baseline.agents?.entries?.qa?.tools).toEqual({ profile: "coding" });
-  });
-
-  it("requires the explicit coding-profile grant even for the authorized sender", () => {
-    const ownerOnlyConfig = { ...baseline, commands: config.commands };
-    expect(authorizationFor(ownerOnlyConfig).senderIsOwner).toBe(true);
-    expect(toolsFor(ownerOnlyConfig).map((tool) => tool.name)).not.toContain("openclaw");
-  });
+  it.each([
+    ["baseline", () => baseline, false, false],
+    ["owner only", () => ({ ...baseline, commands: config.commands }), true, false],
+    ["authorized and granted", () => config, true, true],
+  ] as const)(
+    "requires ownership and a coding-profile grant: %s",
+    (_label, getConfig, owner, granted) => {
+      const policy = policyFor(getConfig());
+      expect(policy.senderIsOwner).toBe(owner);
+      if (!granted) {
+        expect(policy.names).not.toContain("openclaw");
+        return;
+      }
+      expect(policy.names).toContain("read");
+      expect(policy.delegate?.catalogMode).toBe("direct-only");
+      expect(config.tools).toEqual(baseline.tools);
+      expect(baseline.agents?.entries?.qa?.tools).toEqual({ profile: "coding" });
+    },
+  );
 
   it.each([
     { senderId: "bob", provider: "qa-channel" },
     { senderId: "alice", provider: "webchat" },
   ])("does not grant ownership to $provider:$senderId", async ({ senderId, provider }) => {
-    expect(authorizationFor(config, senderId, provider).senderIsOwner).toBe(false);
-    const tool = expectDefined(
-      toolsFor(config, { senderId, provider }).find((candidate) => candidate.name === "openclaw"),
-      "offered openclaw tool",
-    );
+    const policy = policyFor(config, { senderId, provider });
+    expect(policy.senderIsOwner).toBe(false);
+    const tool = expectDefined(policy.delegate, "offered openclaw tool");
     const result = await tool.execute("non-owner-delegation", {});
     expect(result.details).toMatchObject({ gated: true });
     expect(JSON.stringify(result.content)).toContain("openclaw needs the owner's authority");
@@ -131,7 +129,7 @@ describe("system-agent delegation scenario tool policy", () => {
 
   it("does not bypass conversation-scoped tool policy", () => {
     expect(
-      toolsFor(config, { conversationToolPolicy: { deny: ["openclaw"] } }).map((tool) => tool.name),
+      policyFor(config, { conversationToolPolicy: { deny: ["openclaw"] } }).names,
     ).not.toContain("openclaw");
   });
 
@@ -145,12 +143,10 @@ describe("system-agent delegation scenario tool policy", () => {
     let listCalls = 0;
     const transcriptKeys: string[] = [];
     const inboundTarget = () => {
-      const inbound = state
-        .getSnapshot()
-        .messages.find((message) => message.direction === "inbound");
-      if (!inbound) {
-        throw new Error("scenario did not send its channel input");
-      }
+      const inbound = expectDefined(
+        state.getSnapshot().messages.find((message) => message.direction === "inbound"),
+        "scenario channel input",
+      );
       return buildQaTarget({
         chatType: inbound.conversation.kind,
         conversationId: inbound.conversation.id,
@@ -158,15 +154,15 @@ describe("system-agent delegation scenario tool policy", () => {
       });
     };
     const routedSessionKey = async () => {
-      const route = await qaChannelPlugin.messaging?.resolveOutboundSessionRoute?.({
-        cfg: config,
-        agentId: "qa",
-        accountId: transport.accountId,
-        target: inboundTarget(),
-      });
-      if (!route) {
-        throw new Error("QA channel did not resolve the captured input's route");
-      }
+      const route = expectDefined(
+        await qaChannelPlugin.messaging?.resolveOutboundSessionRoute?.({
+          cfg: config,
+          agentId: "qa",
+          accountId: transport.accountId,
+          target: inboundTarget(),
+        }),
+        "captured input's QA route",
+      );
       return route.sessionKey;
     };
     const result = runLoadedScenarioFlow(scenario.id, {
