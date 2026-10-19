@@ -25,7 +25,9 @@ vi.mock("./embedded-agent-mcp.js", () => ({
 }));
 
 const runtimes: SessionMcpRuntime[] = [];
+const transports: OpenClawStreamableHTTPClientTransport[] = [];
 let initializes = 0;
+let remoteToolName = "probe";
 let reachable = false;
 let invalidListing = false;
 let listToolsGate: Promise<void> | undefined;
@@ -33,71 +35,81 @@ let listToolsGate: Promise<void> | undefined;
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  transports.length = 0;
   initializes = 0;
+  remoteToolName = "probe";
   reachable = false;
   invalidListing = false;
   listToolsGate = undefined;
   warn.mockClear();
-  resolveTransport.mockImplementation((serverName: string) => ({
-    transport: new OpenClawStreamableHTTPClientTransport(new URL("https://mcp.invalid/mcp"), {
-      fetch: async (_input, init) => {
-        if (init?.method !== "POST") {
-          return new Response(null, { status: 405 });
-        }
-        if (typeof init.body !== "string") {
-          throw new Error("Expected a serialized JSON-RPC request body");
-        }
-        const message = JSON.parse(init.body) as { id?: number; method: string };
-        if (message.method === "initialize") {
-          initializes += 1;
-          if (!reachable && serverName === "remote") {
-            return new Promise<Response>((_resolve, reject) => {
-              init.signal?.addEventListener(
-                "abort",
-                () => reject(new Error("Fixture request aborted", { cause: init.signal?.reason })),
-                { once: true },
-              );
-            });
+  resolveTransport.mockImplementation((serverName: string) => {
+    const transport = new OpenClawStreamableHTTPClientTransport(
+      new URL("https://mcp.invalid/mcp"),
+      {
+        fetch: async (_input, init) => {
+          if (init?.method !== "POST") {
+            return new Response(null, { status: 405 });
           }
-        }
-        if (message.id === undefined) {
-          return new Response(null, { status: 202 });
-        }
-        if (message.method === "tools/list" && serverName === "remote") {
-          await listToolsGate;
-        }
-        return new Response(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            id: message.id,
-            result:
-              message.method === "initialize"
-                ? {
-                    protocolVersion: "2025-06-18",
-                    capabilities: { tools: {} },
-                    serverInfo: { name: "fixture", version: "1" },
-                  }
-                : {
-                    tools: [
-                      {
-                        name: serverName === "remote" ? "probe" : "healthy_tool",
-                        inputSchema:
-                          invalidListing && serverName === "remote"
-                            ? { type: "array", items: { type: "number" } }
-                            : { type: "object" },
-                      },
-                    ],
-                  },
-          }),
-          { headers: { "content-type": "application/json" } },
-        );
+          if (typeof init.body !== "string") {
+            throw new Error("Expected a serialized JSON-RPC request body");
+          }
+          const message = JSON.parse(init.body) as { id?: number; method: string };
+          if (message.method === "initialize") {
+            initializes += 1;
+            if (!reachable && serverName === "remote") {
+              return new Promise<Response>((_resolve, reject) => {
+                init.signal?.addEventListener(
+                  "abort",
+                  () =>
+                    reject(new Error("Fixture request aborted", { cause: init.signal?.reason })),
+                  { once: true },
+                );
+              });
+            }
+          }
+          if (message.id === undefined) {
+            return new Response(null, { status: 202 });
+          }
+          if (message.method === "tools/list" && serverName === "remote") {
+            await listToolsGate;
+          }
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: message.id,
+              result:
+                message.method === "initialize"
+                  ? {
+                      protocolVersion: "2025-06-18",
+                      capabilities: { tools: { listChanged: true } },
+                      serverInfo: { name: "fixture", version: "1" },
+                    }
+                  : {
+                      tools: [
+                        {
+                          name: serverName === "remote" ? remoteToolName : "healthy_tool",
+                          inputSchema:
+                            invalidListing && serverName === "remote"
+                              ? { type: "array", items: { type: "number" } }
+                              : { type: "object" },
+                        },
+                      ],
+                    },
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
+        },
       },
-    }),
-    description: "unreachable fixture",
-    transportType: "streamable-http",
-    connectionTimeoutMs: 30_000,
-    requestTimeoutMs: 60_000,
-  }));
+    );
+    transports.push(transport);
+    return {
+      transport,
+      description: "unreachable fixture",
+      transportType: "streamable-http",
+      connectionTimeoutMs: 30_000,
+      requestTimeoutMs: 60_000,
+    };
+  });
 });
 
 afterEach(async () => {
@@ -213,6 +225,28 @@ it("retries failed listings in the background without stalling healthy siblings"
   expect(recovered.tools.map((tool) => tool.toolName)).toEqual(["healthy_tool", "probe"]);
   expect(recovered.diagnostics).toBeUndefined();
   expect(initializes).toBe(3);
+});
+
+it("refreshes a connected session while a sibling with the same startup key is unavailable", async () => {
+  reachable = true;
+  const healthy = makeRuntime();
+  const before = await healthy.getCatalog();
+  expect(before.tools.map((tool) => tool.toolName)).toEqual(["probe"]);
+  const transport = transports[0]!;
+
+  reachable = false;
+  const failed = await discover(makeRuntime());
+  expect(failed.waitedMs).toBe(30_000);
+  expect(failed.catalog.diagnostics?.[0]?.message).toContain("server unavailable");
+
+  remoteToolName = "replacement";
+  transport.onmessage?.({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
+  await vi.advanceTimersByTimeAsync(0);
+  const refreshed = await healthy.getCatalog();
+  expect(refreshed.tools.map((tool) => tool.toolName)).toEqual(["replacement"]);
+  expect(refreshed.diagnostics).toBeUndefined();
+  expect(initializes).toBe(2);
+  expect(before.tools.map((tool) => tool.toolName)).toEqual(["probe"]);
 });
 
 it("clears inherited failure cooldowns when the live runtime is explicitly reloaded", async () => {

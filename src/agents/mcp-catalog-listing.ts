@@ -1,4 +1,4 @@
-import type { Client, Tool } from "@modelcontextprotocol/client";
+import type { Client, Prompt, Resource, Tool } from "@modelcontextprotocol/client";
 import { collectMcpPaginatedItems } from "./mcp-pagination.js";
 
 export const MCP_CATALOG_LIST_LIMITS = {
@@ -59,7 +59,7 @@ export function listMcpServerItems(
     ) => Promise<T>;
   },
 ) {
-  return collectMcpPaginatedItems({
+  return collectMcpPaginatedItems<Prompt | Resource>({
     label: `MCP ${kind === "resources" ? "resource" : "prompt"} listing`,
     itemLabel: kind,
     timeoutMs,
@@ -69,18 +69,18 @@ export function listMcpServerItems(
       runRequest(async (requestSignal) => {
         const requestParams = cursor === undefined ? undefined : { cursor };
         const requestOptions = { timeout, maxTotalTimeout: timeout, signal: requestSignal };
-        const page =
-          kind === "resources"
-            ? await client.request(
-                { method: "resources/list", params: requestParams },
-                requestOptions,
-              )
-            : await client.request(
-                { method: "prompts/list", params: requestParams },
-                requestOptions,
-              );
-        const items = page[kind] as unknown[];
-        return { items, nextCursor: page.nextCursor, serializedValue: page };
+        if (kind === "resources") {
+          const page = await client.request(
+            { method: "resources/list", params: requestParams },
+            requestOptions,
+          );
+          return { items: page.resources, nextCursor: page.nextCursor, serializedValue: page };
+        }
+        const page = await client.request(
+          { method: "prompts/list", params: requestParams },
+          requestOptions,
+        );
+        return { items: page.prompts, nextCursor: page.nextCursor, serializedValue: page };
       }, pageSignal),
   });
 }

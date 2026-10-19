@@ -780,8 +780,8 @@ function createServerMcpRuntime(
 
   const getCatalog = async (): Promise<McpToolCatalog> => {
     failIfDisposed();
-    // Known failures never put reconnect or listing work on turn preparation.
-    if (!catalog) {
+    // Shared startup failures cannot suppress listing on this session's live connection.
+    if (!catalog && !currentSession?.connected) {
       const backoff = getMcpStartupBackoff(
         startupKey,
         lifecycleAbortController.signal,
