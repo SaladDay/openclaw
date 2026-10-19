@@ -1,6 +1,6 @@
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
+import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../../config/io.js";
 import type { callGateway as gatewayCall } from "../../gateway/call.js";
 import { resetAgentEventsForTest } from "../../infra/agent-events.js";
@@ -73,9 +73,9 @@ function observeRecoveryRoots(expectedOrigin: string, expectedCount: number) {
   return { completed: completed.promise, restore: () => spy.mockRestore() };
 }
 
-it.each(["abandoned", "completed", "replaced", "stopped"] as const)(
+it.for(["abandoned", "completed", "replaced", "stopped"] as const)(
   "revisits a startup orphan after its temporary controller owner releases (%s)",
-  async (outcome) => {
+  async (outcome, { signal }) => {
     const sessionsDir = await makeSessionsDir();
     const storePath = path.join(sessionsDir, "sessions.json");
     const sessionKey = "agent:main:main";
@@ -99,7 +99,7 @@ it.each(["abandoned", "completed", "replaced", "stopped"] as const)(
     });
     const recovery = scheduleRestartAbortedMainSessionRecovery({ delayMs: 0 });
     try {
-      await firstPass.completed;
+      await withinTest(firstPass.completed, signal);
       expect(callGateway).not.toHaveBeenCalled();
       expect(readStore(storePath)[sessionKey]?.abortedLastRun).toBe(false);
       firstPass.restore();
@@ -117,20 +117,16 @@ it.each(["abandoned", "completed", "replaced", "stopped"] as const)(
             },
           });
         } else if (outcome === "stopped") {
-          await withTestTimeout(recovery.stop(), 2_000, "Recovery stop waited for the live owner");
+          await withinTest(recovery.stop(), signal);
         }
         owner.release();
         if (outcome === "abandoned") {
-          await withTestTimeout(
-            dispatched.promise,
-            2_000,
-            "Released startup orphan was never resumed",
-          );
+          await withinTest(dispatched.promise, signal);
           expect(callGateway).toHaveBeenCalledOnce();
           expect(gatewayParams()).toMatchObject({ sessionKey });
         } else {
           if (outcome !== "stopped") {
-            await withTestTimeout(nextPass.completed, 2_000, "Owner-release rescan did not settle");
+            await withinTest(nextPass.completed, signal);
           }
           expect(callGateway).not.toHaveBeenCalled();
         }

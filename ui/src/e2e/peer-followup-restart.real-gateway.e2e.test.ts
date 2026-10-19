@@ -17,7 +17,7 @@ if (process.env.OPENCLAW_PEER_RESTART_LIVE !== "1") {
   const [
     { createOpenClawTestInstance },
     { runQaGatewayFixture },
-    { withinTest, withTestTimeout },
+    { withinTest },
     { reserveTestPortListener },
     { createDeferredCore },
     { asOptionalRecord: record },
@@ -569,11 +569,7 @@ if (process.env.OPENCLAW_PEER_RESTART_LIVE !== "1") {
                 stage = "automatic browser reconnect";
                 await waitForControlUiGatewayReady(page);
                 stage = "resumed read-only request";
-                await withTestTimeout(
-                  withinTest(commandGate.resumed, signal),
-                  120_000,
-                  "The restarted target did not resume its read-only request",
-                );
+                await withinTest(commandGate.resumed, signal);
                 stage = "final answer rendering";
                 const answer = pane
                   .locator(".chat-group.assistant .chat-text")
@@ -633,10 +629,9 @@ if (process.env.OPENCLAW_PEER_RESTART_LIVE !== "1") {
               } catch (error) {
                 proof.gatewayLog = sanitize(owner.logs());
                 try {
-                  const [sessions, targetHistory] = await withTestTimeout(
+                  const [sessions, targetHistory] = await withinTest(
                     Promise.all([rows(), history(targetKey)]),
-                    5_000,
-                    "Failure snapshot did not settle",
+                    signal,
                   );
                   proof.failureSessions = sessions;
                   proof.failureTargetHistory = targetHistory;
