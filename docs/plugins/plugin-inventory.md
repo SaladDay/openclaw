@@ -200,7 +200,7 @@ Each entry lists the package, distribution route, and description.
 
 ## Official external packages
 
-98 plugins
+99 plugins
 
 - **[acpx](/plugins/reference/acpx)** (`@openclaw/acpx`) - npm or ClawHub: `@openclaw/acpx`. OpenClaw ACP runtime backend with plugin-owned session and transport management.
 
