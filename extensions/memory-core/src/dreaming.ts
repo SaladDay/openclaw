@@ -430,7 +430,6 @@ export function registerShortTermPromotionDreaming(api: OpenClawPluginApi): void
     }
     const result = await reconcileShortTermDreamingCronJob({
       cron,
-      cfg: startupCfg,
       config,
       logger: api.logger,
     });

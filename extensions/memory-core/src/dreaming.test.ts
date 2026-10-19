@@ -221,13 +221,10 @@ describe("dreaming service reconciliation", () => {
       agents: { ownership: "explicit", entries: { main: {}, opus: {} } },
     };
     const { api, harness, logger } = createDreamingTestContext({ config: ownerlessConfig });
-    const add = vi
-      .spyOn(harness.cron, "add")
-      .mockRejectedValue(
-        new Error(
-          "Agent-less cron job has no resolvable owner. Pass --agent <id> when creating or editing the job, or set agents.defaults.systemAgent.agentId.",
-        ),
-      );
+    const ownerRequired = Object.assign(new Error("No cron owner"), {
+      code: "AGENT_SELECTION_REQUIRED",
+    });
+    const add = vi.spyOn(harness.cron, "add").mockRejectedValue(ownerRequired);
     registerShortTermPromotionDreamingForTest(api);
     await triggerDreamingServiceStart(api, { config: api.config, getCron: () => harness.cron });
     await vi.advanceTimersByTimeAsync(constants.RUNTIME_CRON_RECONCILE_INTERVAL_MS * 3);
@@ -235,7 +232,7 @@ describe("dreaming service reconciliation", () => {
     expect(logger.error).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledTimes(1);
     expectLogContains(logger.warn, "agents.defaults.systemAgent.agentId");
-    expect(add).not.toHaveBeenCalled();
+    expect(add).toHaveBeenCalledTimes(4);
     expect(harness.jobs).toEqual([]);
 
     add.mockRestore();
@@ -252,11 +249,17 @@ describe("dreaming service reconciliation", () => {
 
     await harness.cron.remove(expectDefined(harness.jobs[0], "managed dreaming job").id);
     api.config = ownerlessConfig;
+    const ownerlessAdd = vi.spyOn(harness.cron, "add").mockRejectedValue(ownerRequired);
     await vi.advanceTimersByTimeAsync(constants.RUNTIME_CRON_RECONCILE_INTERVAL_MS * 2);
     expect(logger.error).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledTimes(2);
     expect(harness.addCalls).toHaveLength(1);
     expect(harness.jobs).toEqual([]);
+
+    ownerlessAdd.mockRejectedValue(new Error("scheduler unavailable"));
+    await vi.advanceTimersByTimeAsync(constants.RUNTIME_CRON_RECONCILE_INTERVAL_MS);
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expectLogContains(logger.error, "scheduler unavailable");
   });
 
   it("creates the system agent's dreaming job and keeps reconciling it without an ambient owner", async () => {
