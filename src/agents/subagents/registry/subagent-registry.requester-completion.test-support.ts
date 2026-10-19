@@ -58,6 +58,7 @@ export function registerRequesterCompletionCustodyTests({
 }) {
   it.each([
     "current",
+    "retained followup",
     "overloaded then current",
     "overloaded then revoked",
     "overloaded then retired",
@@ -81,7 +82,10 @@ export function registerRequesterCompletionCustodyTests({
         recovery === "mismatched source" ||
         recovery === "revoked grant";
       const canDispatch =
-        recovery === "current" || recovery === "overloaded then current" || unavailablePolicy;
+        recovery === "current" ||
+        recovery === "retained followup" ||
+        recovery === "overloaded then current" ||
+        unavailablePolicy;
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
         const cfg = { session: { store: state.path("sessions.json") } };
         config.setRuntimeConfigSnapshot(cfg);
@@ -165,6 +169,7 @@ export function registerRequesterCompletionCustodyTests({
             return captureRequester(...args);
           });
         let deliveredAuthority: ReturnType<typeof createAdmittedRunOperatorAuthority> | undefined;
+        let releaseFollowup: (() => void) | undefined;
         const deliver = vi
           .spyOn(delivery, "deliverSubagentAnnouncement")
           .mockImplementation(async (params) => {
@@ -172,6 +177,9 @@ export function registerRequesterCompletionCustodyTests({
             deliveredAuthority =
               getPluginRuntimeGatewayRequestScope()?.client?.internal?.operatorRunAuthority;
             expectDefined(deliveredAuthority, "restored requester authority").assertCurrent();
+            if (recovery === "retained followup") {
+              releaseFollowup = expectDefined(deliveredAuthority?.retain, "follow-up retention")();
+            }
             params.onAccepted?.({ status: "accepted" });
             return { delivered: true, path: "direct" };
           });
@@ -425,7 +433,11 @@ export function registerRequesterCompletionCustodyTests({
             expect(deliveredAuthority?.profileId).toBe(source.authority.profileId);
             expect(deliveredAuthority?.scopes).toEqual(["operator.write"]);
             expect(deliveredAuthority?.gatewayAccessGrant).toEqual(grantRef);
-            // Committed batch settlement releases its restored completion custody.
+            // Settlement releases completion custody, not a follow-up's retained source.
+            if (releaseFollowup) {
+              expect(deliveredAuthority?.assertCurrent).not.toThrow();
+              releaseFollowup();
+            }
             expect(deliveredAuthority?.assertCurrent).toThrow(/authority/);
             const message = deliver.mock.calls[0]?.[0].triggerMessage;
             expect(message).toContain("restart-child-a interrupted by Gateway restart");
@@ -455,6 +467,7 @@ export function registerRequesterCompletionCustodyTests({
             expect(persisted.get("fresh-child-task")?.operatorRecoverySource).toBeUndefined();
           }
         } finally {
+          releaseFollowup?.();
           resumeDelivery.resolve();
           await join();
           requesterRead.mockRestore();

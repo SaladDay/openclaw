@@ -93,17 +93,24 @@ async function restoreSubagentCompletionSource(
     const storePath = entry.requesterStorePath;
     const lifecycleGeneration = getAgentEventLifecycleGeneration();
     const context = captureOpenClawStateWorkerContext();
-    const assertCurrent = () => {
+    const assertGatewayCurrent = () => {
       assertSubagentRegistryWriteSourceCurrent(context);
+      if (
+        !gateway ||
+        !isGatewayCurrent() ||
+        resolver() !== gateway ||
+        !isAgentEventLifecycleGenerationCurrent(lifecycleGeneration)
+      ) {
+        throw new SubagentRegistryMutationRejectedError("Subagent recovery Gateway owner changed");
+      }
+    };
+    const assertCurrent = () => {
+      assertGatewayCurrent();
       const current = getCurrentSubagentRunOwner(subagentRuns, entry);
       if (
         !current ||
-        !gateway ||
         subagentRuns.isCompletionAuthorityRetired(current) ||
-        !isGatewayCurrent() ||
-        resolver() !== gateway ||
-        getEntryGatewayContextResolver(current) !== resolver ||
-        !isAgentEventLifecycleGenerationCurrent(lifecycleGeneration)
+        getEntryGatewayContextResolver(current) !== resolver
       ) {
         throw new SubagentRegistryMutationRejectedError(
           "Subagent recovery completion owner changed",
@@ -164,7 +171,9 @@ async function restoreSubagentCompletionSource(
       snapshot: source.snapshot,
       target: source,
       context: gateway,
-      assertCurrent,
+      // Accepted follow-ups retain the operator source after this completion settles.
+      // Only restoration/publication belongs to the old completion row's lifetime.
+      assertCurrent: assertGatewayCurrent,
       prepareCurrent: async () => {
         const requester = await readSessionEntryReadOnlyInWorker(
           {
