@@ -16,6 +16,7 @@ import {
 } from "../src/agents/subagents/spawn/subagent-session-store.js";
 import * as webSearchPolicy from "../src/agents/web-search-tool-policy.js";
 import { upsertSessionEntryCore } from "../src/config/sessions/session-accessor.entry.js";
+import { replaceSessionEntrySync } from "../src/config/sessions/session-accessor.sqlite-entry.js";
 import { createDirectChatContext } from "../src/gateway/server-chat.agent-events.test-helpers.js";
 import { SessionRowProjectionBinding } from "../src/gateway/session-row-projection-binding.js";
 import { createSessionRowCapabilityReader } from "../src/gateway/session-row-projection-identities.js";
@@ -55,6 +56,9 @@ it.each([
   "requester-reassigned",
   "early-requester-revoked",
   "missing-requester-id-created",
+  "late-requester-id-created",
+  "late-requester-id-removed",
+  "late-requester-id-reassigned",
 ] as const)(
   "binds prepared hosted search to current native authority for %s",
   async (transition) => {
@@ -210,26 +214,41 @@ it.each([
         params.hostCapabilities.assertActive();
         expect((await prepare()).preparedWebSearchPolicy).toMatchObject({ allowed: false });
       }
-      const missingRequesterId = "native-search-missing-requester";
-      if (transition === "missing-requester-id-created") {
-        // Isolate ID-selector admission with a real absent read; the other cases prepare search policy.
+      const missingRequesterId = `native-search-requester-${transition}`;
+      const requesterScope = { ...scope, sessionKey: "agent:main:dashboard:id-requester" };
+      const lateIdChange = transition.startsWith("late-requester-id-");
+      if (
+        transition === "late-requester-id-removed" ||
+        transition === "late-requester-id-reassigned"
+      ) {
+        await upsertSessionEntryCore(requesterScope, {
+          sessionId: missingRequesterId,
+          updatedAt: 1,
+        });
+      }
+      if (transition === "missing-requester-id-created" || lateIdChange) {
+        // Capture real ID-selector facts; the other cases prepare search policy through its normal path.
         const requesterFacts: SessionCapabilitySnapshot[] = [];
-        expect(
-          await withPreparedSessionCapabilityRead(
-            () =>
-              createSubagentSessionStore(scope.storePath, scope.agentId).getById(
-                missingRequesterId,
-              ),
-            { onRead: (snapshot) => requesterFacts.push(snapshot) },
-          ),
-        ).toBeUndefined();
+        const requester = await withPreparedSessionCapabilityRead(
+          () =>
+            createSubagentSessionStore(scope.storePath, scope.agentId).getById(missingRequesterId),
+          { onRead: (snapshot) => requesterFacts.push(snapshot) },
+        );
+        if (
+          transition === "missing-requester-id-created" ||
+          transition === "late-requester-id-created"
+        ) {
+          expect(requester).toBeUndefined();
+        } else {
+          expect(requester).toMatchObject({ sessionId: missingRequesterId });
+        }
         expect(requesterFacts).toContainEqual({
           query: {
             agentId: scope.agentId,
             storePath: scope.storePath,
             sessionId: missingRequesterId,
           },
-          facts: undefined,
+          facts: requester === undefined ? undefined : expect.any(Array),
         });
         prepared = {
           ...prepared,
@@ -286,7 +305,8 @@ it.each([
       if (
         transition === "requester-revoked" ||
         transition === "requester-reassigned" ||
-        transition === "missing-requester-id-created"
+        transition === "missing-requester-id-created" ||
+        lateIdChange
       ) {
         const dispatch = fixture.CodexAppServerClient.prototype.request.bind(wire.client);
         wire.request.mockImplementation((method, body, options) =>
@@ -295,6 +315,27 @@ it.each([
             : dispatch(method, body, {
                 ...options,
                 withCurrent: async (write) => {
+                  if (lateIdChange) {
+                    expect(options?.withCurrent).toBeTypeOf("function");
+                    await options!.withCurrent!(() => {
+                      // All async rechecks/admission have finished; the physical write still checks its source.
+                      replaceSessionEntrySync(
+                        transition === "late-requester-id-reassigned"
+                          ? { ...scope, sessionKey: "agent:main:dashboard:earlier-requester" }
+                          : requesterScope,
+                        {
+                          sessionId:
+                            transition === "late-requester-id-removed"
+                              ? "replacement-requester"
+                              : missingRequesterId,
+                          updatedAt: 2,
+                        },
+                      );
+                      requesterChanged = true;
+                      write();
+                    });
+                    return;
+                  }
                   if (!requesterChanged) {
                     if (transition === "missing-requester-id-created") {
                       await upsertSessionEntryCore(
@@ -373,7 +414,8 @@ it.each([
         if (
           transition === "requester-revoked" ||
           transition === "requester-reassigned" ||
-          transition === "missing-requester-id-created"
+          transition === "missing-requester-id-created" ||
+          lateIdChange
         ) {
           expect(requesterChanged).toBe(true);
         }

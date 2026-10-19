@@ -49,7 +49,11 @@ harnesses may ignore the field.
 For native-owned models, core uses the prepared native model reference. Codex
 rejects a changed tuple or requester facts before applying the prepared search
 policy; retrying the turn prepares current policy. Native admission retains the
-captured requester checks through dispatch. Both bindings are optional in the SDK
+captured requester checks through the physical native write, including session-ID
+selection and absence. The existing `captureSessionEntryCurrentCheckAsync` helper
+accepts an optional `sessionId` selector in place of `sessionKey`; when both are
+supplied, the ID selects the row. Existing key-only callers are unchanged.
+Both bindings are optional in the SDK
 shape to preserve existing callers. Pending native supervision without a selected
 model omits the field and retains the harness's existing policy-resolution path.
 

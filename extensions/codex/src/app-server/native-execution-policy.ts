@@ -15,10 +15,7 @@ import {
   composeSessionEntryCommitGuards,
   type PreparedSessionSourceAssertion,
 } from "openclaw/plugin-sdk/session-binding-runtime";
-import {
-  getSessionEntryByIdAsync,
-  type SessionEntry,
-} from "openclaw/plugin-sdk/session-store-runtime";
+import type { SessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 
 type ExecHost = "sandbox" | "gateway" | "node";
 type ExecTarget = "auto" | ExecHost;
@@ -96,7 +93,6 @@ export async function prepareCodexNativeExecutionPolicy(
   const { sourceAgentId, sourceSessionKey, canReadSessionEntry } =
     resolveSessionSelection(captured);
   const sources: Awaited<ReturnType<typeof captureSessionEntryCurrentCheckAsync>>[] = [];
-  const idChecks: Array<() => Promise<void>> = [];
   const changed = () => {
     throw new Error("Codex requester policy changed; retry the turn to prepare current policy.");
   };
@@ -139,39 +135,17 @@ export async function prepareCodexNativeExecutionPolicy(
           ? entry === undefined
           : entry !== undefined &&
             facts.every(({ field, value }) => isDeepStrictEqual(entry[field], value));
-      let sessionKey = query.sessionKey;
-      if (query.sessionId !== undefined) {
-        const lookup = await getSessionEntryByIdAsync(query);
-        if (!matches(lookup?.entry)) {
-          changed();
-        }
-        sessionKey = lookup?.sessionKey;
-        const expectedKey = sessionKey;
-        idChecks.push(async () => {
-          const current = await getSessionEntryByIdAsync(query);
-          if (current?.sessionKey !== expectedKey || !matches(current?.entry)) {
-            changed();
-          }
-        });
-      }
-      if (sessionKey !== undefined) {
-        const source = await captureSessionEntryCurrentCheckAsync({
-          agentId: query.agentId,
-          storePath: query.storePath,
-          sessionKey,
-          fields: facts?.map(({ field }) => field) ?? [],
-          errorMessage: "Codex requester policy changed; retry the turn to prepare current policy.",
-        });
-        sources.push(source);
-        if (!matches(source.entry)) {
-          changed();
-        }
+      const source = await captureSessionEntryCurrentCheckAsync({
+        ...query,
+        fields: facts?.map(({ field }) => field) ?? [],
+        errorMessage: "Codex requester policy changed; retry the turn to prepare current policy.",
+      });
+      sources.push(source);
+      if (!matches(source.entry)) {
+        changed();
       }
     }
     const assertCurrent = async () => {
-      for (const check of idChecks) {
-        await check();
-      }
       for (const source of sources) {
         await source.assertCurrent();
       }
