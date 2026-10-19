@@ -4,9 +4,19 @@ import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metada
 import { withPluginRuntimeGenerationScope } from "../../plugins/runtime/generation-scope.js";
 import { SecretSurfaceUnavailableError } from "../../secrets/runtime-degraded-state.js";
 import type { AuthProfileStore } from "../auth-profiles.js";
-import { createApiKeyCredential } from "../auth-profiles/credential-fixtures.test-support.js";
 import { OAuthRefreshFailureError } from "../auth-profiles/oauth-refresh-failure.js";
 import { configFor } from "../model-auth.fixtures.test-support.js";
+import {
+  apiKey,
+  authProvider,
+  authStore,
+  oauth,
+  platformModel,
+  platformRoute,
+  subscriptionModel,
+  subscriptionRoute,
+  token,
+} from "./auth-fixtures.test-support.js";
 import type { PreparedAgentRuntimeAuthAttempt } from "./prepare-auth.js";
 import {
   resolvePreparedRuntimeAuthAttempts,
@@ -32,46 +42,6 @@ vi.mock("../../llm/oauth.js", async (importOriginal) => ({
   }),
 }));
 
-const platformModel = {
-  id: "gpt-5.5",
-  name: "gpt-5.5",
-  provider: "openai",
-  api: "openai-responses",
-  baseUrl: "https://api.openai.com/v1",
-  input: ["text"],
-  reasoning: true,
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  contextWindow: 128_000,
-  maxTokens: 8_000,
-} as Model;
-
-const subscriptionModel = {
-  ...platformModel,
-  api: "openai-chatgpt-responses",
-  baseUrl: "https://chatgpt.com/backend-api/codex",
-} as Model;
-
-const platformRoute = {
-  provider: "openai",
-  modelId: "gpt-5.5",
-  api: "openai-responses",
-  baseUrl: "https://api.openai.com/v1",
-  authRequirement: "api-key",
-  requestTransportOverrides: "none",
-} as const;
-
-const subscriptionRoute = {
-  ...platformRoute,
-  api: "openai-chatgpt-responses",
-  baseUrl: "https://chatgpt.com/backend-api/codex",
-  authRequirement: "subscription",
-} as const;
-
-function authStore(profiles: AuthProfileStore["profiles"]): AuthProfileStore {
-  return { version: 1, profiles };
-}
-
-const authProvider = { providerForAuth: "openai", authProfileProviderForAuth: "openai" };
 function makeProfilePlan(
   profileId: string,
   candidates = [profileId],
@@ -84,12 +54,6 @@ function makeProfilePlan(
     forwardedAuthProfileCandidateIds: candidates,
     ...overrides,
   };
-}
-function token(value: string) {
-  return { type: "token" as const, provider: "openai", token: value, expires: Date.now() + 60_000 };
-}
-function oauth(access: string, refresh: string, expires = Date.now() + 60_000) {
-  return { type: "oauth" as const, provider: "openai", access, refresh, expires };
 }
 function profileThenDirect(
   plan: AgentRuntimeAuthPlan,
@@ -153,8 +117,8 @@ describe("resolvePreparedRuntimeModelAuth", () => {
   it("removes profile and selection state after a Platform key is resolved", () => {
     const store = {
       ...authStore({
-        "openai:subscription": token("subscription-token"),
-        "openai:platform": createApiKeyCredential("openai", "platform-key"),
+        "openai:subscription": token("subscription-token", Date.now() + 60_000),
+        "openai:platform": apiKey("platform-key"),
       }),
       order: { openai: ["openai:subscription", "openai:platform"] },
       lastGood: { openai: "openai:subscription" },
@@ -184,14 +148,12 @@ describe("resolvePreparedRuntimeModelAuth", () => {
   });
 
   it("preserves the selected renewable OAuth owner through public Responses preparation", async () => {
-    const credential = {
-      type: "oauth" as const,
-      provider: "openai",
+    const credential = oauth({
       authFlow: "chatgpt-token-sharing",
       access: "shared-access",
       refresh: "shared-refresh",
       expires: Date.now() + 600_000,
-    };
+    });
     const store = authStore({
       "openai:shared": credential,
       "openai:unselected": { ...credential, access: "unselected-access" },
@@ -234,7 +196,7 @@ describe("resolvePreparedRuntimeModelAuth", () => {
           id: "OPENCLAW_TEST_MISSING_PREPARED_AUTH",
         },
       },
-      "openai:backup": createApiKeyCredential("openai", "backup-key"),
+      "openai:backup": apiKey("backup-key"),
     });
 
     await expectAuth({
@@ -256,7 +218,7 @@ describe("resolvePreparedRuntimeModelAuth", () => {
     async () => {
       vi.stubEnv("OPENAI_API_KEY", "");
       const store = authStore({
-        "openai:platform": createApiKeyCredential("openai", "platform-key"),
+        "openai:platform": apiKey("platform-key"),
       });
 
       await expectAuth({
@@ -275,7 +237,7 @@ describe("resolvePreparedRuntimeModelAuth", () => {
   it("resolves an ambient Platform key without borrowing the OAuth-only full store", async () => {
     vi.stubEnv("OPENAI_API_KEY", "ambient-platform-key");
     const store = authStore({
-      "openai:chatgpt": oauth("subscription-token", "refresh-token"),
+      "openai:chatgpt": oauth({ access: "subscription-token", refresh: "refresh-token" }),
     });
 
     const resolved = await resolveModelAuth({
@@ -312,7 +274,7 @@ describe("resolvePreparedRuntimeModelAuth", () => {
       const key = subscription ? "configured-subscription-credential" : "configured-platform-key";
       const store = authStore(
         subscription
-          ? { "openai:platform": createApiKeyCredential("openai", "platform-key") }
+          ? { "openai:platform": apiKey("platform-key") }
           : {
               "openai:chatgpt": { type: "token", provider: "openai", token: "subscription-token" },
             },
@@ -353,11 +315,15 @@ describe("resolvePreparedRuntimeModelAuth", () => {
       const mode = changed ? "token" : "api-key";
       const store = authStore({
         [first]: changed
-          ? createApiKeyCredential("openai", "platform-key")
-          : oauth("expired-access", "expired-refresh", Date.now() - 60_000),
+          ? apiKey("platform-key")
+          : oauth({
+              access: "expired-access",
+              refresh: "expired-refresh",
+              expires: Date.now() - 60_000,
+            }),
         "openai:backup": changed
-          ? token("subscription-token")
-          : createApiKeyCredential("openai", "backup-key"),
+          ? token("subscription-token", Date.now() + 60_000)
+          : apiKey("backup-key"),
       });
       await expectAuth({
         plan: makeProfilePlan(first, [first, "openai:backup"], {
@@ -380,8 +346,8 @@ describe("resolvePreparedRuntimeModelAuth", () => {
 
   it.each([false, true])("rechecks prepared candidates after cooldown (all: %s)", async (all) => {
     const store = authStore({
-      "openai:first": createApiKeyCredential("openai", "first-key"),
-      "openai:backup": createApiKeyCredential("openai", "backup-key"),
+      "openai:first": apiKey("first-key"),
+      "openai:backup": apiKey("backup-key"),
     });
     const plan = makeProfilePlan(
       "openai:first",
@@ -414,7 +380,7 @@ describe("resolvePreparedRuntimeModelAuth", () => {
 
   it("does not unlock direct fallback when a profile cools during materialization", async () => {
     const store = authStore({
-      "openai:first": createApiKeyCredential("openai", "first-key"),
+      "openai:first": apiKey("first-key"),
     });
     const profilePlan = makeProfilePlan("openai:first", ["openai:first"]);
     const directPlan = authProvider;
@@ -471,8 +437,12 @@ describe("resolvePreparedRuntimeModelAuth", () => {
           attempts: profileThenDirect(profilePlan, directPlan),
           store: authStore({
             [profileId]: secretRef
-              ? createApiKeyCredential("openai", "unused")
-              : oauth("expired-access", "expired-refresh", Date.now() - 60_000),
+              ? apiKey("unused")
+              : oauth({
+                  access: "expired-access",
+                  refresh: "expired-refresh",
+                  expires: Date.now() - 60_000,
+                }),
           }),
           materializeModel,
           resolveAuth,
@@ -565,7 +535,7 @@ describe("resolvePreparedRuntimeModelAuth", () => {
   it("keeps a user-locked profile terminal when environment auth is also present", async () => {
     vi.stubEnv("OPENAI_API_KEY", "ambient-key");
     const store = authStore({
-      "openai:locked": createApiKeyCredential("openai", "codex-app-server"),
+      "openai:locked": apiKey("codex-app-server"),
     });
 
     await expectAuth({

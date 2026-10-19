@@ -5,35 +5,22 @@ import {
   makeRegistry,
 } from "../../config/plugin-auto-enable.test-helpers.js";
 import { configFor } from "../model-auth.fixtures.test-support.js";
+import {
+  authProvider,
+  platformModel,
+  subscriptionModel,
+  subscriptionRoute,
+} from "./auth-fixtures.test-support.js";
 import { materializePreparedRuntimeModel, type RuntimeRouteModel } from "./materialize-model.js";
 import type { AgentRuntimeAuthPlan } from "./types.js";
 
 const plan: AgentRuntimeAuthPlan = {
-  providerForAuth: "openai",
-  authProfileProviderForAuth: "openai",
+  ...authProvider,
   forwardedAuthProfileId: "openai:subscription",
   selectedAuthMode: "token",
-  modelRoute: {
-    provider: "openai",
-    modelId: "gpt-5.5",
-    api: "openai-chatgpt-responses",
-    baseUrl: "https://chatgpt.com/backend-api/codex",
-    authRequirement: "subscription",
-    requestTransportOverrides: "none",
-  },
+  modelRoute: subscriptionRoute,
 };
 
-const subscriptionModel = {
-  provider: "openai",
-  id: "gpt-5.5",
-  api: "openai-chatgpt-responses",
-  baseUrl: "https://chatgpt.com/backend-api/codex",
-};
-const platformModel = {
-  ...subscriptionModel,
-  api: "openai-responses",
-  baseUrl: "https://api.openai.com/v1",
-};
 type MaterializeParams<M extends RuntimeRouteModel> = Parameters<
   typeof materializePreparedRuntimeModel<M>
 >[0];
