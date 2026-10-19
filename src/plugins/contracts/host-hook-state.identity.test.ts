@@ -3,7 +3,7 @@ import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execu
 import { resolvePromptBuildHookResult } from "../../agents/embedded-agent-runner/run/attempt-prompt-helpers.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import {
-  loadSessionEntryReadOnly,
+  loadSessionEntryReadOnly as readEntry,
   replaceSessionEntry,
   resolveSessionEntryAccessTarget,
 } from "../../config/sessions/session-accessor.entry.js";
@@ -16,7 +16,7 @@ import {
 } from "../../test-utils/openclaw-test-state.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import {
-  drainPluginNextTurnInjectionContext,
+  drainPluginNextTurnInjectionContext as drain,
   enqueuePluginNextTurnInjection,
 } from "../host-hook-state.js";
 import { createEmptyPluginRegistry } from "../registry-empty.js";
@@ -25,6 +25,26 @@ import { createPluginRecord } from "../status.test-helpers.js";
 
 describe("next-turn injection identity", () => {
   let state: OpenClawTestState;
+  function sessionScope(cfg: OpenClawConfig, agentId: string, sessionKey: string) {
+    return {
+      agentId,
+      sessionKey,
+      storePath: resolveSessionStorePathCore(cfg.session?.store, { agentId, env: state.env }),
+    };
+  }
+  async function seed(
+    cfg: OpenClawConfig,
+    scope: ReturnType<typeof sessionScope>,
+    sessionId: string,
+    text: string,
+  ) {
+    await replaceSessionEntry(scope, { sessionId, updatedAt: 1 });
+    await enqueuePluginNextTurnInjection({
+      cfg,
+      pluginId: "owner-fixture",
+      injection: { ...scope, text },
+    });
+  }
   beforeEach(async () => {
     state = await createOpenClawTestState({ prefix: "host-hook-identity-" });
     const registry = createEmptyPluginRegistry();
@@ -39,44 +59,23 @@ describe("next-turn injection identity", () => {
   it.each(["agent:main:missing", "agent:main:dashboard:incognito-injection"])(
     "keeps an absent queue absent and reads a later enqueue for %s",
     async (sessionKey) => {
-      const cfg: OpenClawConfig = {
-        agents: { entries: { main: {}, unrelated: {} } },
-      };
-      const scope = {
-        agentId: "main",
-        sessionKey,
-        storePath: resolveSessionStorePathCore(cfg.session?.store, {
-          agentId: "main",
-          env: state.env,
-        }),
-      };
-      await expect(drainPluginNextTurnInjectionContext({ cfg, ...scope })).resolves.toMatchObject({
+      const cfg: OpenClawConfig = { agents: { entries: { main: {}, unrelated: {} } } };
+      const scope = sessionScope(cfg, "main", sessionKey);
+      await expect(drain({ cfg, ...scope })).resolves.toMatchObject({
         queuedInjections: [],
       });
-      expect(loadSessionEntryReadOnly(scope)).toBeUndefined();
-      await replaceSessionEntry(scope, { sessionId: "injection-owner", updatedAt: 1 });
-      await enqueuePluginNextTurnInjection({
-        cfg,
-        pluginId: "owner-fixture",
-        injection: { ...scope, text: "next turn" },
-      });
-      await expect(drainPluginNextTurnInjectionContext({ cfg, ...scope })).resolves.toMatchObject({
+      expect(readEntry(scope)).toBeUndefined();
+      await seed(cfg, scope, "injection-owner", "next turn");
+      await expect(drain({ cfg, ...scope })).resolves.toMatchObject({
         prependContext: "next turn",
       });
-      expect(loadSessionEntryReadOnly(scope)?.pluginNextTurnInjections).toBeUndefined();
+      expect(readEntry(scope)?.pluginNextTurnInjections).toBeUndefined();
     },
   );
 
   it("validates only the selected injection row beside a noncanonical sibling", async () => {
     const cfg: OpenClawConfig = { agents: { entries: { main: {} } } };
-    const scope = {
-      agentId: "main",
-      sessionKey: "agent:main:healthy",
-      storePath: resolveSessionStorePathCore(cfg.session?.store, {
-        agentId: "main",
-        env: state.env,
-      }),
-    };
+    const scope = sessionScope(cfg, "main", "agent:main:healthy");
     const sibling = "agent:main:matrix:channel:!mixed:example.org";
     await replaceSessionEntry(scope, { sessionId: "healthy", updatedAt: 1 });
     await replaceSessionEntry(
@@ -98,16 +97,14 @@ describe("next-turn injection identity", () => {
       .prepare("UPDATE session_nodes SET entry_valid = 1 WHERE session_key = ?")
       .run(sibling);
     expect(resolveSessionEntryAccessTarget({ cfg, ...scope }).entry?.sessionId).toBe("healthy");
-    await expect(drainPluginNextTurnInjectionContext({ cfg, ...scope })).resolves.toMatchObject({
+    await expect(drain({ cfg, ...scope })).resolves.toMatchObject({
       queuedInjections: [],
     });
     const broken = { cfg, ...scope, sessionKey: sibling };
     expect(() => resolveSessionEntryAccessTarget(broken)).toThrow(
       SessionCanonicalKeyMigrationRequiredError,
     );
-    await expect(drainPluginNextTurnInjectionContext(broken)).rejects.toBeInstanceOf(
-      SessionCanonicalKeyMigrationRequiredError,
-    );
+    await expect(drain(broken)).rejects.toBeInstanceOf(SessionCanonicalKeyMigrationRequiredError);
   });
 
   it.each(["absent", "empty"] as const)(
@@ -117,24 +114,15 @@ describe("next-turn injection identity", () => {
         session: { store: state.path("{agentId}", "sessions.json"), scope: "global" },
         agents: { entries: { qa: {} } },
       };
-      const raw = {
-        agentId: "qa",
-        storePath: state.path("qa", "sessions.json"),
-        sessionKey: "global",
-      };
+      const raw = sessionScope(cfg, "qa", "global");
       const literal = { ...raw, sessionKey: "agent:qa:global" };
       await replaceSessionEntry(raw, {
         sessionId: "raw-owner",
         updatedAt: 1,
         ...(queue === "empty" ? { pluginNextTurnInjections: {} } : {}),
       });
-      await replaceSessionEntry(literal, { sessionId: "literal-owner", updatedAt: 1 });
-      await enqueuePluginNextTurnInjection({
-        cfg,
-        pluginId: "owner-fixture",
-        injection: { sessionKey: literal.sessionKey, agentId: "qa", text: "literal queue" },
-      });
-      const before = [raw, literal].map((scope) => loadSessionEntryReadOnly(scope));
+      await seed(cfg, literal, "literal-owner", "literal queue");
+      const before = [raw, literal].map((scope) => readEntry(scope));
 
       const sql = observeHostDataSql();
       try {
@@ -153,7 +141,7 @@ describe("next-turn injection identity", () => {
         sql.restore();
       }
 
-      expect([raw, literal].map((scope) => loadSessionEntryReadOnly(scope))).toEqual(before);
+      expect([raw, literal].map((scope) => readEntry(scope))).toEqual(before);
     },
   );
 
@@ -175,15 +163,7 @@ describe("next-turn injection identity", () => {
         sessionKey,
       });
       for (const sessionKey of ["global", "unknown"]) {
-        await replaceSessionEntry(physical(sessionKey), {
-          sessionId: `ops-${sessionKey}`,
-          updatedAt: 1,
-        });
-        await enqueuePluginNextTurnInjection({
-          cfg: activeCfg,
-          pluginId: "owner-fixture",
-          injection: { sessionKey, agentId: "ops", text: `ops ${sessionKey}` },
-        });
+        await seed(activeCfg, physical(sessionKey), `ops-${sessionKey}`, `ops ${sessionKey}`);
       }
       const selected = await resolveSessionEntryAccessTarget(
         { cfg: activeCfg, sessionKey: "global" },
@@ -195,14 +175,11 @@ describe("next-turn injection identity", () => {
         storeKey: "global",
         readSource: { agentId: "storage", path: shared },
       });
-      const before = ["global", "unknown"].map((key) => loadSessionEntryReadOnly(physical(key)));
+      const before = ["global", "unknown"].map((key) => readEntry(physical(key)));
       const cfg: OpenClawConfig = retired
         ? {
             ...activeCfg,
-            agents: {
-              ...activeCfg.agents,
-              entries: { work: {}, storage: {} },
-            },
+            agents: { ...activeCfg.agents, entries: { work: {}, storage: {} } },
           }
         : activeCfg;
       for (const request of [
@@ -212,23 +189,17 @@ describe("next-turn injection identity", () => {
         { sessionKey: "agent:work:main", agentId: "work" },
         { sessionKey: "agent:work:main" },
       ]) {
-        await expect(drainPluginNextTurnInjectionContext({ cfg, ...request })).rejects.toThrow(
+        await expect(drain({ cfg, ...request })).rejects.toThrow(
           retired ? 'belongs to retired agent "ops"' : 'belongs to "ops", not "work"',
         );
       }
-      expect(["global", "unknown"].map((key) => loadSessionEntryReadOnly(physical(key)))).toEqual(
-        before,
-      );
-      await expect(
-        drainPluginNextTurnInjectionContext({ cfg: activeCfg, sessionKey: "global" }),
-      ).resolves.toMatchObject({ prependContext: "ops global" });
-      expect(
-        loadSessionEntryReadOnly(physical("global"))?.pluginNextTurnInjections,
-      ).toBeUndefined();
-      expect(loadSessionEntryReadOnly(physical("unknown"))).toEqual(before[1]);
-      expect(
-        loadSessionEntryReadOnly({ ...physical("agent:work:global"), agentId: "work" }),
-      ).toBeUndefined();
+      expect(["global", "unknown"].map((key) => readEntry(physical(key)))).toEqual(before);
+      await expect(drain({ cfg: activeCfg, sessionKey: "global" })).resolves.toMatchObject({
+        prependContext: "ops global",
+      });
+      expect(readEntry(physical("global"))?.pluginNextTurnInjections).toBeUndefined();
+      expect(readEntry(physical("unknown"))).toEqual(before[1]);
+      expect(readEntry({ ...physical("agent:work:global"), agentId: "work" })).toBeUndefined();
     },
   );
 
@@ -239,35 +210,21 @@ describe("next-turn injection identity", () => {
         session: { store: state.path("{agentId}", "sessions.json"), scope: "global" },
         agents: { entries: { qa: {}, beta: {} } },
       };
-      const scope = (agentId: string) => ({
-        agentId,
-        storePath: state.path(agentId, "sessions.json"),
-        sessionKey: "global",
-      });
+      const scope = (agentId: string) => sessionScope(cfg, agentId, "global");
       for (const agentId of ["qa", "beta"]) {
-        await replaceSessionEntry(scope(agentId), { sessionId: agentId, updatedAt: 1 });
-        await enqueuePluginNextTurnInjection({
-          cfg,
-          pluginId: "owner-fixture",
-          injection: { sessionKey: "global", agentId, text: agentId },
-        });
+        await seed(cfg, scope(agentId), agentId, agentId);
       }
-      const betaBefore = loadSessionEntryReadOnly(scope("beta"));
+      const betaBefore = readEntry(scope("beta"));
       const literal = { ...scope("qa"), sessionKey: "agent:qa:global" };
       if (collision) {
         await replaceSessionEntry(literal, { sessionId: "separate-literal", updatedAt: 1 });
       }
-      const drain = drainPluginNextTurnInjectionContext({
-        cfg,
-        agentId: "qa",
-        sessionKey: "global",
+      await expect(drain({ cfg, agentId: "qa", sessionKey: "global" })).resolves.toMatchObject({
+        prependContext: "qa",
       });
-      await expect(drain).resolves.toMatchObject({ prependContext: "qa" });
-      expect(loadSessionEntryReadOnly(scope("qa"))?.pluginNextTurnInjections).toBeUndefined();
-      expect(loadSessionEntryReadOnly(literal)?.sessionId).toBe(
-        collision ? "separate-literal" : undefined,
-      );
-      expect(loadSessionEntryReadOnly(scope("beta"))).toEqual(betaBefore);
+      expect(readEntry(scope("qa"))?.pluginNextTurnInjections).toBeUndefined();
+      expect(readEntry(literal)?.sessionId).toBe(collision ? "separate-literal" : undefined);
+      expect(readEntry(scope("beta"))).toEqual(betaBefore);
     },
   );
 });
