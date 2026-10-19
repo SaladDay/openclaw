@@ -17,8 +17,10 @@ import {
 } from "../e2e/lib/mock-inference-facts.ts";
 import { readBody } from "../e2e/lib/mock-openai-http.mjs";
 import { stopChild } from "../lib/gateway-bench-child.ts";
+import { startGatewayBenchDiagnostics } from "../lib/gateway-bench-diagnostics.ts";
 import {
   readGatewayCpuUsage,
+  startGatewayDiagnostics,
   readGatewayResources,
   measureGatewayCpuUsage,
   measureGatewayAllocations,
@@ -35,6 +37,7 @@ const { values } = parseArgs({
   options: {
     "state-dir": { type: "string" },
     allocations: { type: "boolean", default: false },
+    diagnostics: { type: "boolean", default: false },
     scenario: { type: "string", default: "transcript-broadcast" },
     revision: { type: "string" },
     operations: { type: "string" },
@@ -559,6 +562,7 @@ async function rpc(
   client: ReturnType<typeof createGatewayWsClient>,
   method: string,
   params: unknown,
+  onResponse?: (id: string) => void,
 ) {
   assertGatewayAlive();
   const response = await client.request(method, params, 180_000);
@@ -566,6 +570,7 @@ async function rpc(
   if (!response.ok) {
     throw new Error(`${method}: ${JSON.stringify(response.error)}`);
   }
+  onResponse?.(response.id);
   return response.payload;
 }
 async function runRound(client: ReturnType<typeof createGatewayWsClient>) {
@@ -931,9 +936,24 @@ try {
     recoveredResponses = 0;
     imageRequests = 0;
     recapRequests = 0;
+    const finishGatewayDiagnostics = values.diagnostics
+      ? await startGatewayDiagnostics(gateway)
+      : undefined;
+    const finishControllerDiagnostics = values.diagnostics
+      ? startGatewayBenchDiagnostics()
+      : undefined;
     const before = await readGatewayCpuUsage(gateway);
     measuring = true;
     const listLatencies: number[] = [];
+    const listRequests: Array<{
+      method: "sessions.list";
+      responseId: string;
+      client: number;
+      round: number;
+      startedAtEpochMs: number;
+      endedAtEpochMs: number;
+      durationMs: number;
+    }> = [];
     const workload = async () => {
       let polling = true;
       let stopPolling!: () => void;
@@ -943,17 +963,23 @@ try {
       const listWork = listIntervalMs
         ? Promise.all(
             clients
-              .map(async (client) => {
+              .map(async (client, clientIndex) => {
                 while (true) {
                   if (!polling) {
                     break;
                   }
                   const started = performance.now();
-                  const page = await rpc(client, "sessions.list", {
-                    rowMode: "compact",
-                    limit,
-                    archived: "all",
-                  });
+                  let responseId = "";
+                  const page = await rpc(
+                    client,
+                    "sessions.list",
+                    { rowMode: "compact", limit, archived: "all" },
+                    values.diagnostics
+                      ? (id) => {
+                          responseId = id;
+                        }
+                      : undefined,
+                  );
                   if (
                     !isRecord(page) ||
                     typeof page.totalCount !== "number" ||
@@ -964,7 +990,20 @@ try {
                   ) {
                     throw new Error("concurrent sessions.list did not return the requested page");
                   }
-                  listLatencies.push(performance.now() - started);
+                  const ended = performance.now();
+                  const durationMs = ended - started;
+                  listLatencies.push(durationMs);
+                  if (values.diagnostics) {
+                    listRequests.push({
+                      method: "sessions.list",
+                      responseId,
+                      client: clientIndex,
+                      round,
+                      startedAtEpochMs: performance.timeOrigin + started,
+                      endedAtEpochMs: performance.timeOrigin + ended,
+                      durationMs,
+                    });
+                  }
                   await Promise.race([
                     delay(Math.max(0, listIntervalMs - (performance.now() - started)), undefined, {
                       ref: false,
@@ -1003,6 +1042,9 @@ try {
       await workload();
     }
     measuring = false;
+    const diagnostics = finishGatewayDiagnostics
+      ? { gateway: await finishGatewayDiagnostics(), controller: finishControllerDiagnostics?.() }
+      : undefined;
     assertGatewayAlive();
     if (clients.some((client) => client.ws.readyState !== client.ws.OPEN)) {
       throw new Error("a subscriber was lost during the measured round");
@@ -1067,6 +1109,7 @@ try {
       round,
       scenario,
       allocation,
+      diagnostics,
       toolCalls,
       toolResults,
       recapRequests,
@@ -1086,6 +1129,14 @@ try {
               p95: sortedListLatencies[Math.ceil(listLatencies.length * 0.95) - 1],
               p99: sortedListLatencies[Math.ceil(listLatencies.length * 0.99) - 1],
               latencies: listLatencies,
+              ...(values.diagnostics
+                ? {
+                    requests: listRequests,
+                    p99Request: listRequests.toSorted((a, b) => a.durationMs - b.durationMs)[
+                      Math.ceil(listRequests.length * 0.99) - 1
+                    ],
+                  }
+                : {}),
             },
           }
         : {}),
@@ -1131,6 +1182,7 @@ try {
     sessionRowDeltas: values["session-row-deltas"],
     sessionEnvelopeRefs: values["session-envelope-refs"],
     listIntervalMs,
+    diagnostics: values.diagnostics,
     measurementStartedAt,
     initialFullFrame,
     clientCount,

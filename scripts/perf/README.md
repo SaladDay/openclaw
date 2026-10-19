@@ -267,6 +267,15 @@ change events; the model fixture serves the recaps without external inference.
 `--list-interval-ms 1000` adds concurrent compact `sessions.list` polling, one
 request at a time per client, and reports successful latency samples and
 p50/p95/p99. Invalid or failed list responses reject the run.
+Add `--diagnostics` identically on both sides to capture per-round Gateway and
+replay-controller event-loop delay (20 ms sampling), GC pause totals, and bounded
+internal operation aggregates without starting CPU or heap profiling. List
+samples also retain the response ID, client index, round, start/end timestamps,
+and duration; `p99Request` identifies the nearest-rank round p99. For a multi-round
+pair, sort all `sessionsList.requests` by duration to identify its pooled p99.
+These records contain timing and identity only, never RPC payloads. Gateway
+metrics cover its main isolate, not worker isolates. Capture adds overhead, so
+compare equally instrumented pairs and keep earlier uncaptured runs distinct.
 
 `eventBytes` measures the exact received, uncompressed JSON frame bytes,
 including the event envelope, before parsing. `sessionEventSizes` splits session
