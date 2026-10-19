@@ -176,30 +176,33 @@ async function runCommenter(
           apiCalls.push("listJobs");
           expect(params).toMatchObject({ run_id: run.id, filter: "all" });
           return [
-            ...(options.previousAttempts ?? []).flatMap((run_attempt) => [
-              {
-                name: `Detect ${platform} scan scope`,
-                conclusion: "success",
-                status: "completed",
-                run_attempt,
-              },
-              {
-                name: `Scan ${platform} dead code`,
-                conclusion: "skipped",
-                status: "completed",
-                run_attempt,
-              },
-              ...(platform === "macOS"
-                ? [
-                    {
-                      name: "Build macOS Periphery reports",
-                      conclusion: "success",
-                      status: "completed",
-                      run_attempt,
-                    },
-                  ]
-                : []),
-            ]),
+            ...(options.previousAttempts ?? []).flatMap((run_attempt) =>
+              [
+                {
+                  name: `Detect ${platform} scan scope`,
+                  conclusion: "success",
+                  status: "completed",
+                  run_attempt,
+                },
+                {
+                  name: `Scan ${platform} dead code`,
+                  conclusion: "skipped",
+                  status: "completed",
+                  run_attempt,
+                },
+              ].concat(
+                platform === "macOS"
+                  ? [
+                      {
+                        name: "Build macOS Periphery reports",
+                        conclusion: "success",
+                        status: "completed",
+                        run_attempt,
+                      },
+                    ]
+                  : [],
+              ),
+            ),
             {
               conclusion: options.scopeJobConclusion ?? "success",
               name: `Detect ${platform} scan scope`,

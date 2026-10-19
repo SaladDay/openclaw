@@ -160,7 +160,9 @@ describe("Periphery producer attempt selection", () => {
   const workflow = parse(readFileSync(WORKFLOW_PATH, "utf8")) as Workflow;
   const script = workflow.jobs?.intersect?.steps?.find((step) => step.id === "producers")?.with
     ?.script;
-  if (!script) throw new Error("missing producer resolution");
+  if (!script) {
+    throw new Error("missing producer resolution");
+  }
   const execute = compileFunction(`return (async () => {\n${script}\n})();`, [
     "github",
     "context",
@@ -212,7 +214,7 @@ describe("Periphery producer attempt selection", () => {
     "retains actual producer attempts on an intersection-only rerun (%s)",
     async (prefix) => {
       await expect(
-        resolve(producers().map((job) => ({ ...job, name: prefix + job.name }))),
+        resolve(producers().map((job) => Object.assign({}, job, { name: prefix + job.name }))),
       ).resolves.toEqual({
         "ios-attempt": "1",
         "macos-attempt": "2",
@@ -229,10 +231,13 @@ describe("Periphery producer attempt selection", () => {
   it.each([
     ["missing", () => producers().slice(0, 1)],
     ["ambiguous", () => [...producers(), producer("scan / Build macOS Periphery reports")]],
-    ["wrong run", () => producers().map((job) => ({ ...job, run_id: 999 }))],
-    ["wrong head", () => producers().map((job) => ({ ...job, head_sha: "old-head" }))],
-    ["incomplete", () => producers().map((job) => ({ ...job, status: "queued" }))],
-    ["invalid attempt", () => producers().map((job) => ({ ...job, run_attempt: 0 }))],
+    ["wrong run", () => producers().map((job) => Object.assign({}, job, { run_id: 999 }))],
+    [
+      "wrong head",
+      () => producers().map((job) => Object.assign({}, job, { head_sha: "old-head" })),
+    ],
+    ["incomplete", () => producers().map((job) => Object.assign({}, job, { status: "queued" }))],
+    ["invalid attempt", () => producers().map((job) => Object.assign({}, job, { run_attempt: 0 }))],
   ] as const)("fails closed for %s producer metadata", async (_label, jobs) => {
     await expect(resolve(jobs())).rejects.toThrow("Periphery producer");
   });
