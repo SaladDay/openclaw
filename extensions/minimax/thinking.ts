@@ -1,7 +1,7 @@
 // MiniMax thinking policy keeps M3 active by default while preserving M2.x leak prevention.
 import type { ProviderThinkingProfile } from "openclaw/plugin-sdk/plugin-entry";
 
-export const MINIMAX_M31_MODEL_ID = "MiniMax-M3.1-Flash-Preview";
+export const MINIMAX_M31_MODEL_ID = "MiniMax-M3.1-Flash";
 
 const BUDGET_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high"] as const;
 const ADAPTIVE_THINKING_LEVELS = ["off", "adaptive"] as const;

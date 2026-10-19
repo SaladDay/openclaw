@@ -15,8 +15,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import minimaxPlugin from "./index.js";
 
 const m31Model: Model<"anthropic-messages"> = {
-  id: "MiniMax-M3.1-Flash-Preview",
-  name: "MiniMax M3.1 Flash Preview",
+  id: "MiniMax-M3.1-Flash",
+  name: "MiniMax M3.1 Flash",
   provider: "minimax",
   api: "anthropic-messages",
   baseUrl: "https://api.minimaxi.com/anthropic",
@@ -292,9 +292,9 @@ describe("minimax provider hooks", () => {
       const catalog = await provider.staticCatalog?.run({ env: {}, config: {} } as never);
       const models =
         catalog && "providers" in catalog ? catalog.providers[provider.id]?.models : [];
-      expect(models?.find((model) => model.id === "MiniMax-M3.1-Flash-Preview")).toEqual(
+      expect(models?.find((model) => model.id === "MiniMax-M3.1-Flash")).toEqual(
         expect.objectContaining({
-          id: "MiniMax-M3.1-Flash-Preview",
+          id: "MiniMax-M3.1-Flash",
           input: ["text", "image"],
           contextWindow: 1_000_000,
           reasoning: true,
@@ -312,7 +312,7 @@ describe("minimax provider hooks", () => {
           modelId: ref.modelId.toLowerCase(),
           providerConfig: {},
         } as never),
-      ).toMatchObject({ id: "MiniMax-M3.1-Flash-Preview", api: "anthropic-messages" });
+      ).toMatchObject({ id: "MiniMax-M3.1-Flash", api: "anthropic-messages" });
     }
   });
 

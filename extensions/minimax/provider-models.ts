@@ -13,7 +13,7 @@ export const MINIMAX_TEXT_MODEL_ORDER = [
 
 export const MINIMAX_TEXT_MODEL_CATALOG = {
   [MINIMAX_M31_MODEL_ID]: {
-    name: "MiniMax M3.1 Flash Preview",
+    name: "MiniMax M3.1 Flash",
     reasoning: true,
     input: ["text", "image"],
     contextWindow: 1_000_000,
