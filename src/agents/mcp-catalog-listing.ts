@@ -65,7 +65,7 @@ export function listAllMcpServerItems(
   lifecycleSignal: AbortSignal,
 ) {
   const callerSignal = getSessionMcpRequestSignal();
-  return collectMcpPaginatedItems({
+  return collectMcpPaginatedItems<unknown>({
     label: `MCP ${kind === "resources" ? "resource" : "prompt"} listing`,
     itemLabel: kind,
     timeoutMs: session.requestTimeoutMs,
@@ -77,18 +77,18 @@ export function listAllMcpServerItems(
         async (requestSignal) => {
           const requestParams = cursor === undefined ? undefined : { cursor };
           const requestOptions = { timeout, maxTotalTimeout: timeout, signal: requestSignal };
-          const page =
-            kind === "resources"
-              ? await session.client.request(
-                  { method: "resources/list", params: requestParams },
-                  requestOptions,
-                )
-              : await session.client.request(
-                  { method: "prompts/list", params: requestParams },
-                  requestOptions,
-                );
-          const items = page[kind] as unknown[];
-          return { items, nextCursor: page.nextCursor, serializedValue: page };
+          if (kind === "resources") {
+            const page = await session.client.request(
+              { method: "resources/list", params: requestParams },
+              requestOptions,
+            );
+            return { items: page.resources, nextCursor: page.nextCursor, serializedValue: page };
+          }
+          const page = await session.client.request(
+            { method: "prompts/list", params: requestParams },
+            requestOptions,
+          );
+          return { items: page.prompts, nextCursor: page.nextCursor, serializedValue: page };
         },
         signal,
       ),
