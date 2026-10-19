@@ -17,7 +17,7 @@ describe("OpenAI Responses payload debug summary", () => {
   afterEach(() => vi.unstubAllEnvs());
 
   it.each(["summary", "tools", "full-redacted"])(
-    "keeps %s diagnostics free of prompt, tool, and provider-error content",
+    "keeps %s diagnostics free of prompt, tool, and nested provider-error content",
     (mode) => {
       vi.stubEnv("OPENCLAW_DEBUG_MODEL_PAYLOAD", mode);
       const privateText = "synthetic private prompt and tool result";
@@ -40,7 +40,7 @@ describe("OpenAI Responses payload debug summary", () => {
       );
       expect(failure.observation?.failureFieldNames).toEqual(["error_details"]);
       expect(JSON.stringify(failure.observation)).not.toContain(privateText);
-      const error = Object.assign(new Error(privateText), {
+      const error = Object.assign(new Error("connection failed"), {
         status: 503,
         code: "service_unavailable",
         cause: Object.assign(new Error(privateText), { code: "ECONNRESET" }),
@@ -49,7 +49,9 @@ describe("OpenAI Responses payload debug summary", () => {
       expect(diagnostic).toContain("status=503 code=service_unavailable");
       expect(diagnostic).toContain("causeCode=ECONNRESET");
       expect(diagnostic).not.toContain(privateText);
-      expect(summarizeOpenAITransportError(privateText)).not.toContain(privateText);
+      expect(summarizeOpenAITransportError("connection failed")).toContain(
+        'message="connection failed"',
+      );
       expect(
         summarizeOpenAITransportError({
           code: { output: privateText },

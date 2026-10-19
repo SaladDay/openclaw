@@ -1,5 +1,7 @@
 import type { Model } from "@openclaw/llm-core";
+import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { truncateWithMarker } from "@openclaw/normalization-core/utf16-slice";
 import { readTransportDiagnosticLabel } from "../utils/provider-error.js";
 import { resolveModelPayloadDebugMode } from "./model-transport-debug.js";
 import { RESPONSE_FAILED_NO_DETAILS_MESSAGE } from "./openai-responses-contracts.js";
@@ -353,21 +355,43 @@ export function summarizeResponsesPayload(params: unknown): string {
   return parts.join(" ");
 }
 
-export function summarizeOpenAITransportError(error: unknown): string {
-  if (!error || typeof error !== "object") {
-    return `type=${typeof error}`;
-  }
-  const record = error as Record<string, unknown>;
+export function summarizeOpenAITransportError(error: unknown, signal?: AbortSignal): string {
+  const record = isRecord(error) ? error : undefined;
   const cause =
-    record.cause && typeof record.cause === "object"
+    record?.cause && typeof record.cause === "object"
       ? (record.cause as Record<string, unknown>)
       : undefined;
-  return [
-    `name=${safeDebugValue(readTransportDiagnosticLabel(record.name))}`,
-    `status=${safeDebugValue(readTransportDiagnosticLabel(record.status))}`,
-    `code=${safeDebugValue(readTransportDiagnosticLabel(record.code))}`,
-    `type=${safeDebugValue(readTransportDiagnosticLabel(record.type))}`,
-    `causeName=${safeDebugValue(readTransportDiagnosticLabel(cause?.name))}`,
-    `causeCode=${safeDebugValue(readTransportDiagnosticLabel(cause?.code))}`,
-  ].join(" ");
+  const parts = record
+    ? [
+        `name=${safeDebugValue(readTransportDiagnosticLabel(record.name))}`,
+        `status=${safeDebugValue(readTransportDiagnosticLabel(record.status))}`,
+        `code=${safeDebugValue(readTransportDiagnosticLabel(record.code))}`,
+        `type=${safeDebugValue(readTransportDiagnosticLabel(record.type))}`,
+        `causeName=${safeDebugValue(readTransportDiagnosticLabel(cause?.name))}`,
+        `causeCode=${safeDebugValue(readTransportDiagnosticLabel(cause?.code))}`,
+      ]
+    : [`type=${typeof error}`];
+  const abortReason: unknown = signal?.aborted ? signal.reason : undefined;
+  const messages: Array<[string, unknown]> = [["message", error]];
+  if (signal?.aborted) {
+    parts.push(
+      `abortName=${safeDebugValue(readTransportDiagnosticLabel(isRecord(abortReason) ? abortReason.name : undefined))}`,
+    );
+    messages.push(["abortMessage", abortReason]);
+  }
+  // Read only error prose, never serialize SDK errors with headers or request/response bodies.
+  for (const [field, value] of messages) {
+    const message =
+      value instanceof Error || typeof value === "string"
+        ? coerceErrorMessage(value)
+        : isRecord(value) && typeof value.message === "string"
+          ? value.message
+          : undefined;
+    if (message) {
+      parts.push(
+        `${field}=${JSON.stringify(truncateWithMarker(message.replace(/\s+/gu, " "), 300, { marker: "…", reserve: 1, trimEnd: false }))}`,
+      );
+    }
+  }
+  return parts.join(" ");
 }

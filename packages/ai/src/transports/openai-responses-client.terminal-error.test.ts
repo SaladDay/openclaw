@@ -234,18 +234,58 @@ it.each(["filtered", "failed", "eof", "aborted"])(
   },
 );
 
-it("keeps a caller deadline at warning level when the stream throws a generic abort", async () => {
+it("logs the idle-timeout reason at warning level when the stream throws a generic abort", async () => {
   const controller = new AbortController();
   queueStream(async function* () {
     yield { type: "response.created", response: { id: "resp_timeout", status: "in_progress" } };
-    controller.abort(new DOMException("run deadline", "TimeoutError"));
+    controller.abort(new Error("LLM idle timeout (120s): no model progress"));
     throw new Error("Request was aborted");
   });
-  expect((await (await run({ signal: controller.signal })).result()).stopReason).toBe("aborted");
+  const stream = await run({
+    signal: controller.signal,
+    headers: { Authorization: "Bearer private-key" },
+  });
+  expect((await stream.result()).stopReason).toBe("aborted");
   expect(logWarn).toHaveBeenCalledWith(
     "openai-transport",
-    expect.stringContaining("[responses] error "),
+    expect.stringContaining('message="Request was aborted"'),
     undefined,
+  );
+  const line = logWarn.mock.calls.find(([, message]) =>
+    message.startsWith("[responses] error "),
+  )?.[1];
+  expect(line).toContain("abortName=Error");
+  expect(line).toContain('abortMessage="LLM idle timeout (120s): no model progress"');
+  expect(JSON.stringify(logWarn.mock.calls)).not.toContain("private-key");
+});
+
+it("logs bounded single-line provider messages without headers or bodies", async () => {
+  queueStream(async function* () {
+    yield { type: "response.created", response: { id: "resp_error", status: "in_progress" } };
+    throw Object.assign(
+      new SyntaxError(`Invalid event payload\n\t"unterminated" \u001b[31m ${"x".repeat(400)} tail`),
+      {
+        headers: { Authorization: "Bearer private-key" },
+        request: { body: "private-request" },
+        response: { body: "private-response", headers: { "set-cookie": "private-cookie" } },
+      },
+    );
+  });
+  expect((await (await run()).result()).stopReason).toBe("error");
+  const line = logWarn.mock.calls.find(([, message]) =>
+    message.startsWith("[responses] error "),
+  )?.[1];
+  expect(line).toContain("name=SyntaxError");
+  expect(line).toContain('message="Invalid event payload \\"unterminated\\"');
+  for (const control of ["\r", "\n", "\t", "\u001b"]) {
+    expect(line).not.toContain(control);
+  }
+  const message = line?.match(/ message=("(?:[^"\\]|\\.)*")/u)?.[1];
+  expect(JSON.parse(message ?? "null")).toHaveLength(300);
+  expect(JSON.parse(message ?? "null")).toMatch(/…$/u);
+  expect(line).not.toContain(" tail");
+  expect(JSON.stringify(logWarn.mock.calls)).not.toMatch(
+    /private-(?:key|request|response|cookie)/u,
   );
 });
 

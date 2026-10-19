@@ -348,6 +348,13 @@ results before repeating them.
 
 ### Targeted model transport diagnostics
 
+OpenAI Responses transport failures include a quoted `message` and, when the
+request signal was aborted, `abortName` and `abortMessage`. Messages are kept on
+one line and capped at 300 characters to distinguish idle timeouts, caller
+aborts, and provider errors. These fields read only error messages; they do not
+serialize request or response bodies or headers. Local logs retain error text;
+normal log egress redaction applies when viewing or exporting it.
+
 Prompt-cache history warnings identify the first changed message and bounded
 field paths, such as `content[0].thinkingSignature` or `content[0].arguments`.
 They report no message content, argument values, or signature bytes. Unknown
