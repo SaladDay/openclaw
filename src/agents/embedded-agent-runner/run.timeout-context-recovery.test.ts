@@ -274,32 +274,30 @@ describe("timeout recovery", () => {
         reservationId: `timeout-recovery-completion:${++deliveryAttempt}`,
         policy: { mode: "followup" },
       });
-    const sendCompletionWithInput = (controllerInput: ReturnType<typeof reserveCompletion>) =>
-      sendSubagentAnnounceDirectly({
-        requesterSessionKey: sessionKey,
-        targetRequesterSessionKey: sessionKey,
-        triggerMessage: "child completed",
-        expectsCompletionMessage: true,
-        requesterIsSubagent: true,
-        directIdempotencyKey: "timeout-recovery-completion",
-        controllerInput,
-      });
     const sendCompletion = async () => {
       const controllerInput = reserveCompletion();
       try {
-        return await sendCompletionWithInput(controllerInput);
+        return await sendSubagentAnnounceDirectly({
+          requesterSessionKey: sessionKey,
+          targetRequesterSessionKey: sessionKey,
+          triggerMessage: "child completed",
+          expectsCompletionMessage: true,
+          requesterIsSubagent: true,
+          directIdempotencyKey: "timeout-recovery-completion",
+          controllerInput,
+        });
       } finally {
         if (!controllerInput.custody.rpcAdopted) {
           retireSessionControllerInput(controllerInput);
         }
       }
     };
-    const abandon = (runId: string) => {
+    const abandonRun = (runId: string, runTarget = target) => {
       const handle = createEmbeddedRunHandle({ runId });
       const operation = createReplyOperation({
         sessionId,
         sessionKey,
-        target,
+        target: runTarget,
         resetTriggered: false,
       });
       attachActiveEmbeddedRun(sessionId, handle, sessionKey, undefined, "main", operation);
@@ -308,6 +306,10 @@ describe("timeout recovery", () => {
       ).toBe(true);
       clearActiveEmbeddedRun(sessionId, handle, sessionKey);
       operation.complete();
+      return operation;
+    };
+    const abandon = (runId: string) => {
+      const operation = abandonRun(runId);
       const marker = markEmbeddedRunRecoveringTimeout({ sessionId, runId, operation });
       expect(marker).toBeDefined();
       return marker!;
@@ -333,24 +335,7 @@ describe("timeout recovery", () => {
       sessionKey,
       incarnation: sessionId,
     });
-    const otherOperation = createReplyOperation({
-      sessionId,
-      sessionKey,
-      target: otherTarget,
-      resetTriggered: false,
-    });
-    const otherHandle = createEmbeddedRunHandle({ runId: "other-store-timeout" });
-    attachActiveEmbeddedRun(sessionId, otherHandle, sessionKey, undefined, "main", otherOperation);
-    expect(
-      markActiveEmbeddedRunAbandoned({
-        sessionId,
-        sessionKey,
-        handle: otherHandle,
-        reason: "timeout",
-      }),
-    ).toBe(true);
-    clearActiveEmbeddedRun(sessionId, otherHandle, sessionKey);
-    otherOperation.complete();
+    abandonRun("other-store-timeout", otherTarget);
     abandon("run-timeout");
     // Delivery is recorded once and never retried (c6ecb5f9f2a), so a recovering requester
     // receives the completion through one dispatch that waits in its mailbox.
@@ -381,13 +366,9 @@ describe("timeout recovery", () => {
       { sessionKey, sessionId, target },
       async (operation) => {
         setActiveEmbeddedRun(sessionId, successor, sessionKey, undefined, "main", operation);
-        const controllerInput = reserveCompletion();
         try {
-          return await sendCompletionWithInput(controllerInput);
+          return await sendCompletion();
         } finally {
-          if (!controllerInput.custody.rpcAdopted) {
-            retireSessionControllerInput(controllerInput);
-          }
           clearActiveEmbeddedRun(sessionId, successor, sessionKey);
         }
       },

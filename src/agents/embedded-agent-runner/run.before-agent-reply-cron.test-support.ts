@@ -19,8 +19,6 @@ let state: OpenClawTestState;
 let runEmbeddedAgent: Awaited<ReturnType<typeof loadSharedRunIntegrationHarness>>;
 
 function firstBeforeAgentReplyCall() {
-  // Helper keeps assertions on the hook payload and context close to the tests
-  // without leaking mock tuple details into every case.
   const call = mockedGlobalHookRunner.runBeforeAgentReply.mock.calls[0];
   if (!call) {
     throw new Error("expected before_agent_reply hook call");
@@ -62,6 +60,9 @@ describe("runEmbeddedAgent before_agent_reply seam", () => {
     state = await createOpenClawTestState({ label: "run.before-agent-reply-cron" });
     const { setRuntimeConfigSnapshot } = await import("../../config/runtime-snapshot.js");
     setRuntimeConfigSnapshot({});
+    mockedGlobalHookRunner.hasHooks.mockImplementation(
+      (hookName: string) => hookName === "before_agent_reply",
+    );
   });
 
   afterEach(async () => {
@@ -69,11 +70,6 @@ describe("runEmbeddedAgent before_agent_reply seam", () => {
   });
 
   it("lets before_agent_reply claim cron runs before the embedded attempt starts", async () => {
-    // Cron hooks can fully handle maintenance prompts before the model is
-    // invoked, which avoids unnecessary prompt-cache and setup work.
-    mockedGlobalHookRunner.hasHooks.mockImplementation(
-      (hookName: string) => hookName === "before_agent_reply",
-    );
     mockedGlobalHookRunner.runBeforeAgentReply.mockResolvedValue({
       handled: true,
       reply: { text: "dreaming claimed" },
@@ -96,15 +92,19 @@ describe("runEmbeddedAgent before_agent_reply seam", () => {
     expect(hookPayload).toEqual({
       cleanedBody: "__openclaw_memory_core_short_term_promotion_dream__",
     });
-    expect(hookContext?.jobId).toBe("cron-job-123");
-    expect(hookContext?.agentId).toBe("main");
-    expect(hookContext?.sessionId).toBe("test-session");
-    expect(hookContext?.sessionKey).toBe(createOverflowRunParams(state).sessionKey);
-    expect(hookContext?.workspaceDir).toBe(state.workspaceDir);
-    expect(hookContext?.trigger).toBe("cron");
-    expect(hookContext?.senderId).toBeUndefined();
-    expect(hookContext?.chatId).toBeUndefined();
-    expect(hookContext?.channel).toBeUndefined();
+    expect(hookContext).toMatchObject({
+      jobId: "cron-job-123",
+      agentId: "main",
+      sessionId: "test-session",
+      sessionKey: createOverflowRunParams(state).sessionKey,
+      workspaceDir: state.workspaceDir,
+      trigger: "cron",
+    });
+    expect([hookContext?.senderId, hookContext?.chatId, hookContext?.channel]).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
     expect(mockedRunEmbeddedAttempt).not.toHaveBeenCalled();
     expect(result.payloads?.[0]?.text).toBe("dreaming claimed");
     // No provider ran; diagnostic capture must not attribute the hook text to a model.
@@ -112,9 +112,6 @@ describe("runEmbeddedAgent before_agent_reply seam", () => {
   });
 
   it("passes the heartbeat queue and re-arms setup progress when its hook does not claim", async () => {
-    mockedGlobalHookRunner.hasHooks.mockImplementation(
-      (hookName: string) => hookName === "before_agent_reply",
-    );
     mockedGlobalHookRunner.runBeforeAgentReply.mockResolvedValue(undefined);
     mockedRunEmbeddedAttempt.mockResolvedValueOnce(makeAttemptResult());
     const onExecutionPhase = vi.fn();
@@ -148,9 +145,6 @@ describe("runEmbeddedAgent before_agent_reply seam", () => {
     let requestAuthority: (() => void) | undefined;
     let claimAuthority: (() => void) | undefined;
     const effect = vi.fn();
-    mockedGlobalHookRunner.hasHooks.mockImplementation(
-      (hookName: string) => hookName === "before_agent_reply",
-    );
     mockedGlobalHookRunner.runBeforeAgentReply.mockImplementation(async (_event, context) => {
       requestAuthority = captureGuardedFetchRequestAuthority();
       claimAuthority = readClaimingHookAdmission(context)?.assertCurrent;
@@ -176,9 +170,6 @@ describe("runEmbeddedAgent before_agent_reply seam", () => {
     const baseline = createDeferred();
     const controller = new AbortController();
     const failure = new Error("ordinary turn cancelled");
-    mockedGlobalHookRunner.hasHooks.mockImplementation(
-      (hookName: string) => hookName === "before_agent_reply",
-    );
     const pending = runEmbeddedAgent({
       ...createOverflowRunParams(state),
       trigger: "user",
@@ -207,9 +198,6 @@ describe("runEmbeddedAgent before_agent_reply seam", () => {
     const params = await prepareHookSession("agent:main:cron:hook-rotation");
     const { replaceSessionEntry } = await import("../../config/sessions/session-accessor.js");
     const effect = vi.fn();
-    mockedGlobalHookRunner.hasHooks.mockImplementation(
-      (hookName: string) => hookName === "before_agent_reply",
-    );
     mockedGlobalHookRunner.runBeforeAgentReply.mockImplementation(async () => {
       effect();
       return { handled: true, reply: { text: "stale hook result" } };

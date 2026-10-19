@@ -15,7 +15,6 @@ import {
   type PluginInstanceHandle,
 } from "../../plugins/plugin-instance-scope.js";
 import { clearPluginMetadataLifecycleCaches } from "../../plugins/plugin-metadata-lifecycle.js";
-import { getPluginRuntimeGenerationRegistry } from "../../plugins/runtime/generation-scope.js";
 import { createColdPluginFixture } from "../../plugins/test-helpers/cold-plugin-fixtures.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -39,18 +38,12 @@ it("admits a second workspace turn through real prepared runtime after registrat
       owner: Owner;
       instance: PluginInstanceHandle;
       disposals: number;
-      mode: string;
       turn: number;
     }> = [];
     let activeTurn = 0;
     const requests: Context[] = [];
-    const requestRegistries: Array<Array<{ id: string; status: string }>> = [];
     const stream: StreamFn = (model, context) => {
       requests.push(structuredClone(context));
-      requestRegistries.push(
-        getPluginRuntimeGenerationRegistry()?.plugins.map(({ id, status }) => ({ id, status })) ??
-          [],
-      );
       const message = makeAgentAssistantMessage({
         api: model.api,
         provider: model.provider,
@@ -66,7 +59,7 @@ it("admits a second workspace turn through real prepared runtime after registrat
     };
     const bridge = {
       stream,
-      capture: (mode: string) => {
+      capture: () => {
         const instance = expectDefined(
           pluginInstanceInvocation.getStore()?.instance,
           "registering instance",
@@ -76,7 +69,6 @@ it("admits a second workspace turn through real prepared runtime after registrat
           owner,
           instance: expectDefined(owner.instance, "owned plugin instance"),
           disposals: 0,
-          mode,
           turn: activeTurn,
         };
         registrations.push(registration);
@@ -165,8 +157,7 @@ module.exports = { id: ${JSON.stringify(pluginId)}, register(api) {
           await resetPreparedModelRuntimeSnapshotsForTest();
           clearPluginMetadataLifecycleCaches();
           setRuntimeConfigSnapshot(config);
-          const results: Array<PromiseSettledResult<Awaited<ReturnType<typeof runEmbeddedAgent>>>> =
-            [];
+          const errors: unknown[] = [];
           try {
             for (const [index, rule] of [
               "Original workspace instruction.",
@@ -185,70 +176,45 @@ module.exports = { id: ${JSON.stringify(pluginId)}, register(api) {
                 "scripted-workspace",
               );
               try {
-                results.push({
-                  status: "fulfilled",
-                  value: await runEmbeddedAgent({
-                    preparedRunAdmission: admission,
-                    config,
-                    runId,
+                const result = await runEmbeddedAgent({
+                  preparedRunAdmission: admission,
+                  config,
+                  runId,
+                  sessionId,
+                  agentDir: state.agentDir(),
+                  workspaceDir: state.workspaceDir,
+                  sessionTarget: {
+                    agentId: "main",
                     sessionId,
-                    agentDir: state.agentDir(),
-                    workspaceDir: state.workspaceDir,
-                    sessionTarget: {
-                      agentId: "main",
-                      sessionId,
-                      sessionKey: `agent:main:${sessionId}`,
-                      storePath: path.join(state.agentDir(), "openclaw-agent.sqlite"),
-                    },
-                    provider: "anthropic",
-                    model: "claude-opus-5",
-                    prompt: `Reply for workspace turn ${index + 1}.`,
-                    disableTools: true,
-                    cleanupBundleMcpOnRunEnd: true,
-                    timeoutMs: 30_000,
-                  }),
+                    sessionKey: `agent:main:${sessionId}`,
+                    storePath: path.join(state.agentDir(), "openclaw-agent.sqlite"),
+                  },
+                  provider: "anthropic",
+                  model: "claude-opus-5",
+                  prompt: `Reply for workspace turn ${index + 1}.`,
+                  disableTools: true,
+                  cleanupBundleMcpOnRunEnd: true,
+                  timeoutMs: 30_000,
                 });
+                errors.push(result.meta.error);
               } catch (reason) {
-                results.push({ status: "rejected", reason });
+                errors.push(String(reason));
               } finally {
                 admission.close();
               }
             }
-            const registryEvidence = JSON.stringify({
-              requestRegistries,
-              registrations: registrations.map(({ owner, instance, disposals, mode, turn }) => ({
-                id: owner.record.id,
-                status: owner.record.status,
-                acceptingCalls: instance.acceptingCalls,
-                disposals,
-                mode,
-                turn,
-              })),
-            });
-            expect(
-              results.map((result) =>
-                result.status === "rejected" ? String(result.reason) : result.value.meta.error,
-              ),
-              registryEvidence,
-            ).toEqual([undefined, undefined]);
-            expect(requests, registryEvidence).toHaveLength(2);
+            expect(errors).toEqual([undefined, undefined]);
+            expect(requests).toHaveLength(2);
             expect(network).not.toHaveBeenCalled();
-            expect(
-              registrations.some(
-                ({ owner }) =>
-                  owner.record.id === siblingPluginId && owner.record.status === "error",
-              ),
-              registryEvidence,
-            ).toBe(true);
-            expect(
-              registrations.some(
-                ({ owner, turn }) =>
-                  owner.record.id === siblingPluginId &&
-                  turn === 0 &&
-                  owner.record.status === "loaded",
-              ),
-              registryEvidence,
-            ).toBe(true);
+            const siblingRegistrations = registrations
+              .filter(({ owner }) => owner.record.id === siblingPluginId)
+              .map(({ owner, turn }) => ({ status: owner.record.status, turn }));
+            expect(siblingRegistrations).toEqual(
+              expect.arrayContaining([
+                expect.objectContaining({ status: "error" }),
+                { status: "loaded", turn: 0 },
+              ]),
+            );
             const first = expectDefined(requests[0], "first request");
             const second = expectDefined(requests[1], "second request");
             expect(first.systemPrompt).toContain("Original workspace instruction.");

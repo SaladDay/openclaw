@@ -1,4 +1,6 @@
+import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { makeEmbeddedRunnerAttempt } from "../test-helpers/embedded-agent-runner-e2e-fixtures.js";
 import { createEmbeddedRunReplayState } from "./replay-state.js";
 import { normalizeEmbeddedRunAttempt } from "./run/attempt-normalization.js";
@@ -9,8 +11,13 @@ import { createUsageAccumulator, toNormalizedUsage } from "./usage-accumulator.j
 
 function makeAttempt(
   preflightRecovery?: EmbeddedRunAttemptResult["preflightRecovery"],
+  overrides: Partial<EmbeddedRunAttemptResult> = {},
 ): EmbeddedRunAttemptResult {
-  return makeEmbeddedRunnerAttempt({ sessionIdUsed: "session-1", preflightRecovery });
+  return makeEmbeddedRunnerAttempt({ sessionIdUsed: "session-1", preflightRecovery, ...overrides });
+}
+
+function withAssistant(assistant: ReturnType<typeof makeCliUsageAssistant>) {
+  return { lastAssistant: assistant as never, currentAttemptAssistant: assistant as never };
 }
 
 function makeCliUsageAssistant(stopReason: "aborted" | "error" | "stop", text = "legacy reply") {
@@ -28,7 +35,7 @@ function makeCliUsageAssistant(stopReason: "aborted" | "error" | "stop", text = 
 
 function makePromptState(options: { waitForPersistence?: () => Promise<void> } = {}) {
   const activePrompt = { persisted: false, internal: false };
-  const state = {
+  return {
     sessionId: "session-1",
     sessionFile: "agent:main:main",
     sessionTarget: {
@@ -46,7 +53,6 @@ function makePromptState(options: { waitForPersistence?: () => Promise<void> } =
     markOwnedTranscriptRetry: vi.fn(),
     continueFromCurrentTranscript: vi.fn(),
   };
-  return state;
 }
 
 function makeNormalizationInput(
@@ -145,20 +151,11 @@ describe("normalizeEmbeddedRunAttempt", () => {
       result = await normalizeEmbeddedRunAttempt(input);
     }
 
-    expect(result?.action).toBe("complete");
-    if (!result || result.action !== "complete") {
-      throw new Error(`expected complete, got ${result?.action ?? "no result"}`);
-    }
+    assert(result?.action === "complete", `expected complete, got ${result?.action}`);
     expect(result.result.meta.agentMeta?.credentialSource).toEqual({ kind: "profile" });
   });
 
   it("keeps attempt cost authoritative over a synthetic assistant zero-cost placeholder", async () => {
-    const attempt = makeAttempt();
-    attempt.attemptUsage = {
-      input: 300_000,
-      output: 200,
-      cost: { total: 0.125 },
-    };
     const assistant = {
       ...makeCliUsageAssistant("stop"),
       api: "openai-chatgpt-responses",
@@ -171,8 +168,10 @@ describe("normalizeEmbeddedRunAttempt", () => {
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
       },
     };
-    attempt.lastAssistant = assistant as never;
-    attempt.currentAttemptAssistant = assistant as never;
+    const attempt = makeAttempt(undefined, {
+      ...withAssistant(assistant),
+      attemptUsage: { input: 300_000, output: 200, cost: { total: 0.125 } },
+    });
     const input = makeNormalizationInput(attempt, makePromptState());
 
     await normalizeEmbeddedRunAttempt(input);
@@ -185,13 +184,10 @@ describe("normalizeEmbeddedRunAttempt", () => {
   });
 
   it("waits for pending user-turn persistence before deriving retry suppression", async () => {
-    let releasePersistence: (() => void) | undefined;
-    const persistence = new Promise<void>((resolve) => {
-      releasePersistence = resolve;
-    });
+    const persistence = createDeferred();
     const state = makePromptState({
       waitForPersistence: async () => {
-        await persistence;
+        await persistence.promise;
         state.activePrompt.persisted = true;
       },
     });
@@ -209,7 +205,7 @@ describe("normalizeEmbeddedRunAttempt", () => {
     expect(settled).toBe(false);
     expect(state.suppressNextUserMessagePersistence).toBe(false);
 
-    releasePersistence?.();
+    persistence.resolve();
     const result = await resultPromise;
 
     expect(result.action).toBe("proceed");
@@ -235,21 +231,19 @@ describe("normalizeEmbeddedRunAttempt", () => {
 
     const result = await normalizeEmbeddedRunAttempt(input);
 
-    expect(result.action).toBe("retry");
-    if (result.action !== "retry") {
-      throw new Error(`expected retry, got ${result.action}`);
-    }
+    assert(result.action === "retry", `expected retry, got ${result.action}`);
     expect(result.retryKind).toBe("recovery");
     expect(state.markOwnedTranscriptRetry).toHaveBeenCalledOnce();
     expect(state.continueFromCurrentTranscript).toHaveBeenCalledOnce();
     expect(result.lastRunPromptUsage).toEqual({ contextUsage: { state: "unavailable" } });
-    const retryAttempt = makeAttempt();
-    retryAttempt.attemptUsage = {
-      input: 8_000,
-      output: 500,
-      total: 8_500,
-      contextUsage: { state: "available", promptTokens: 8_000, totalTokens: 8_500 },
-    };
+    const retryAttempt = makeAttempt(undefined, {
+      attemptUsage: {
+        input: 8_000,
+        output: 500,
+        total: 8_500,
+        contextUsage: { state: "available", promptTokens: 8_000, totalTokens: 8_500 },
+      },
+    });
     const retryInput = makeNormalizationInput(retryAttempt, state);
     retryInput.lastRunPromptUsage = result.lastRunPromptUsage;
     expect(await normalizeEmbeddedRunAttempt(retryInput)).toMatchObject({
@@ -279,9 +273,7 @@ describe("normalizeEmbeddedRunAttempt", () => {
       action: "retry",
       retryKind: "progress_continuation",
     });
-    if (result.action !== "retry") {
-      throw new Error(`expected retry, got ${result.action}`);
-    }
+    assert(result.action === "retry", `expected retry, got ${result.action}`);
     expect(result.lastRunPromptUsage).toEqual(input.lastRunPromptUsage);
     expect(state.markOwnedTranscriptRetry).not.toHaveBeenCalled();
     expect(state.continueFromCurrentTranscript).toHaveBeenCalledOnce();
@@ -291,17 +283,14 @@ describe("normalizeEmbeddedRunAttempt", () => {
     const state = makePromptState();
     const assistant = makeCliUsageAssistant("aborted", "");
     const setTerminalLifecycleMeta = vi.fn();
-    const attempt = makeAttempt();
-    attempt.lastAssistant = assistant as never;
-    attempt.currentAttemptAssistant = assistant as never;
-    attempt.setTerminalLifecycleMeta = setTerminalLifecycleMeta;
+    const attempt = makeAttempt(undefined, {
+      ...withAssistant(assistant),
+      setTerminalLifecycleMeta,
+    });
 
     const result = await normalizeEmbeddedRunAttempt(makeNormalizationInput(attempt, state));
 
-    expect(result.action).toBe("proceed");
-    if (result.action !== "proceed") {
-      throw new Error(`expected proceed, got ${result.action}`);
-    }
+    assert(result.action === "proceed", `expected proceed, got ${result.action}`);
     result.setTerminalLifecycleMeta({ replayInvalid: false, livenessState: "blocked" });
     expect(setTerminalLifecycleMeta).toHaveBeenCalledWith({
       replayInvalid: false,
@@ -313,19 +302,16 @@ describe("normalizeEmbeddedRunAttempt", () => {
 
   it("preserves current-attempt context provenance across a retry", async () => {
     const assistant = makeCliUsageAssistant("stop");
-    const attempt = makeAttempt({ route: "compact_only", handled: true, truncatedCount: 0 });
-    attempt.messagesSnapshot = [assistant] as never;
-    attempt.lastAssistant = assistant as never;
-    attempt.currentAttemptAssistant = assistant as never;
+    const attempt = makeAttempt(
+      { route: "compact_only", handled: true, truncatedCount: 0 },
+      { ...withAssistant(assistant), messagesSnapshot: [assistant] as never },
+    );
     const state = makePromptState();
     const input = makeNormalizationInput(attempt, state);
     input.lastRunPromptUsage = { input: 42_000, output: 1_000, total: 43_000 };
     const result = await normalizeEmbeddedRunAttempt(input);
     expect(state.continueFromCurrentTranscript).not.toHaveBeenCalled();
-    expect(result.action).toBe("retry");
-    if (result.action !== "retry") {
-      throw new Error(`expected retry, got ${result.action}`);
-    }
+    assert(result.action === "retry", `expected retry, got ${result.action}`);
     expect(result.lastRunPromptUsage).toEqual({ contextUsage: { state: "unavailable" } });
   });
 });
