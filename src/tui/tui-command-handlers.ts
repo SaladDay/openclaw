@@ -1,10 +1,5 @@
 import { randomUUID } from "node:crypto";
-import {
-  SettingsList,
-  type Component,
-  type OverlayHandle,
-  type SelectItem,
-} from "@earendil-works/pi-tui";
+import type { Component, OverlayHandle, SelectItem } from "@earendil-works/pi-tui";
 import type { SessionsPatchResult } from "../../packages/gateway-protocol/src/index.js";
 import { modelKey } from "../agents/model-ref-shared.js";
 import { resolveTextCommand } from "../auto-reply/commands-registry.js";
@@ -31,8 +26,12 @@ import {
   type TuiCommandHandlerName,
 } from "./commands.js";
 import { FilterableSelectList } from "./components/filterable-select-list.js";
-import { createSearchableSelectList, modelSelectItems } from "./components/selectors.js";
-import { filterableSelectListTheme, settingsListTheme } from "./theme/theme.js";
+import {
+  createSearchableSelectList,
+  createTuiSettingsList,
+  modelSelectItems,
+} from "./components/selectors.js";
+import { filterableSelectListTheme } from "./theme/theme.js";
 import type { TuiBackend } from "./tui-backend.js";
 import { runTuiBrowserSetup } from "./tui-browser-setup.js";
 import type { CommandHandlerContext } from "./tui-command-context.js";
@@ -356,24 +355,8 @@ export function createCommandHandlers(context: CommandHandlerContext) {
 
   const openSettings = () => {
     const request = beginPickerRequest();
-    const items = [
-      {
-        id: "tools",
-        label: "Tool output",
-        currentValue: state.toolsExpanded ? "expanded" : "collapsed",
-        values: ["collapsed", "expanded"],
-      },
-      {
-        id: "thinking",
-        label: "Show thinking",
-        currentValue: state.showThinking ? "on" : "off",
-        values: ["off", "on"],
-      },
-    ];
-    const settings = new SettingsList(
-      items,
-      7,
-      settingsListTheme,
+    const settings = createTuiSettingsList(
+      state,
       (id, value) => {
         if (id === "tools") {
           state.toolsExpanded = value === "expanded";
@@ -619,6 +602,7 @@ export function createCommandHandlers(context: CommandHandlerContext) {
       }
     },
     queue: async (_args, raw) => await sendMessage(raw),
+    followup: async (_args, raw) => await sendMessage(raw),
     openclaw: (args) => {
       chatLog.addSystem(
         args ? `returning to OpenClaw with request: ${args}` : "returning to OpenClaw",
@@ -885,6 +869,15 @@ export function createCommandHandlers(context: CommandHandlerContext) {
           consumeCompletedRunForPendingSend?.(acceptedRunId);
         }
         return;
+      }
+      if (
+        opts.local &&
+        sendResult.status === "queued" &&
+        resolveTextCommand(text)?.command.key === "followup"
+      ) {
+        chatLog.addSystem(
+          "Your message is queued for a new turn after the current turn finishes. It hasn’t changed the work already in progress.",
+        );
       }
       if (isBtw && terminalAck) {
         forgetLocalBtwRunId?.(runId);
