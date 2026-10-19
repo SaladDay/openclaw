@@ -354,6 +354,8 @@ Each entry lists the package, distribution route, and description.
 
 - **[stepfun](/plugins/reference/stepfun)** (`@openclaw/stepfun-provider`) - npm or ClawHub: `@openclaw/stepfun-provider`. Adds StepFun, StepFun Plan model provider support to OpenClaw.
 
+- **[subq](/plugins/reference/subq)** (`@openclaw/subq`) - npm or ClawHub: `@openclaw/subq`. SubQ Snap typed decisions (not a conversational model).
+
 - **[synology-chat](/plugins/reference/synology-chat)** (`@openclaw/synology-chat`) - npm or ClawHub: `@openclaw/synology-chat`. Synology Chat channel plugin for OpenClaw channels and direct messages.
 
 - **[synthetic](/plugins/reference/synthetic)** (`@openclaw/synthetic-provider`) - npm or ClawHub: `@openclaw/synthetic-provider`. Adds Synthetic model provider support to OpenClaw.
