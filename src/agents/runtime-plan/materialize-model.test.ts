@@ -4,7 +4,7 @@ import {
   createPluginMetadataSnapshot,
   makeRegistry,
 } from "../../config/plugin-auto-enable.test-helpers.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { configFor } from "../model-auth.fixtures.test-support.js";
 import { materializePreparedRuntimeModel, type RuntimeRouteModel } from "./materialize-model.js";
 import type { AgentRuntimeAuthPlan } from "./types.js";
 
@@ -38,8 +38,7 @@ type MaterializeParams<M extends RuntimeRouteModel> = Parameters<
   typeof materializePreparedRuntimeModel<M>
 >[0];
 function expectModel<M extends RuntimeRouteModel>(
-  params: Omit<MaterializeParams<M>, "plan" | "provider" | "modelId"> &
-    Partial<Pick<MaterializeParams<M>, "plan" | "provider" | "modelId">>,
+  params: Partial<MaterializeParams<M>> & Pick<MaterializeParams<M>, "resolveModel">,
 ) {
   return expect(
     materializePreparedRuntimeModel({ plan, provider: "openai", modelId: "gpt-5.5", ...params }),
@@ -100,17 +99,13 @@ describe("materializePreparedRuntimeModel", () => {
         modelRoute: { ...plan.modelRoute!, modelId: model.id, baseUrl: model.baseUrl },
       };
       const resolveModel = vi.fn(async () => ({ model }));
-      const config: OpenClawConfig = {
-        models: {
-          providers: {
-            openai: {
-              api: mode === "route-less" ? "openai-chatgpt-responses" : "openai-responses",
-              baseUrl: mode === "route-less" ? model.baseUrl : "https://api.example/v1",
-              models: [],
-            },
-          },
+      const config = configFor(
+        "openai",
+        mode === "route-less" ? model.baseUrl : "https://api.example/v1",
+        {
+          api: mode === "route-less" ? "openai-chatgpt-responses" : "openai-responses",
         },
-      };
+      );
       await expectModel({
         plan:
           mode === "route-less"
@@ -176,16 +171,17 @@ describe("materializePreparedRuntimeModel", () => {
   });
 
   it("projects the selected route and exact auth mode before resolving", async () => {
-    const resolved = subscriptionModel;
-    const resolveModel = vi.fn<MaterializeParams<typeof resolved>["resolveModel"]>(async () => ({
-      model: resolved,
-    }));
+    const resolveModel = vi.fn<MaterializeParams<typeof subscriptionModel>["resolveModel"]>(
+      async () => ({
+        model: subscriptionModel,
+      }),
+    );
 
     await expectModel({
-      config: { models: { providers: {} } } as OpenClawConfig,
+      config: { models: { providers: {} } },
       model: platformModel,
       resolveModel,
-    }).resolves.toBe(resolved);
+    }).resolves.toBe(subscriptionModel);
     expect(resolveModel).toHaveBeenCalledOnce();
     const request = resolveModel.mock.calls[0]?.[0];
     expect(request).toMatchObject({
@@ -234,13 +230,12 @@ describe("materializePreparedRuntimeModel", () => {
   });
 
   it("does not reuse another model that shares the prepared transport", async () => {
-    const resolved = subscriptionModel;
-    const resolveModel = vi.fn(async () => ({ model: resolved }));
+    const resolveModel = vi.fn(async () => ({ model: subscriptionModel }));
 
     await expectModel({
       model: { ...subscriptionModel, id: "gpt-5.4" },
       resolveModel,
-    }).resolves.toBe(resolved);
+    }).resolves.toBe(subscriptionModel);
     expect(resolveModel).toHaveBeenCalledOnce();
   });
 
