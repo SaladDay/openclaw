@@ -3,7 +3,7 @@ import type { NodePermissionRequest } from "../../../../../packages/gateway-prot
 import { Icon } from "../../../components/solid/icon.tsx";
 import { MarkdownHtml } from "../../../components/solid/markdown-html.tsx";
 import type { ChatItem } from "../../../lib/chat/chat-types.ts";
-import { t } from "../../../lib/reactive/i18n.ts";
+import { formatTimeMs } from "../../../lib/format.ts";
 import { detectTextDirection } from "../../../lib/text-direction.ts";
 import "./chat-permission-card.tsx";
 import "./chat-run-failure-notice.tsx";
@@ -93,7 +93,7 @@ export function ChatDivider(props: { item: Extract<ChatItem, { kind: "divider" }
   );
 }
 
-export type ChatNoticeRecovery = Pick<
+type ChatNoticeRecovery = Pick<
   ChatThreadProps,
   "failureActionsRunId" | "runActive" | "runWorking" | "onRetryRun"
 >;
@@ -146,6 +146,31 @@ function NoticeBody(props: { text: string }) {
   );
 }
 
+/** Context injected mid-run reads as part of the agent's turn, not as a session divider. */
+function InlineNotice(props: ChatNoticeProps) {
+  return (
+    <details
+      class="chat-notice-inline"
+      data-chat-row-key={props.item.key}
+      data-ts={String(props.item.timestamp)}
+    >
+      <summary>
+        <span class="chat-notice-inline__icon" aria-hidden="true">
+          <Icon name={props.item.icon ?? "cpu"} />
+        </span>
+        <strong class="chat-notice-inline__label">{props.item.label}</strong>
+        <Show when={props.item.showTimestamp}>
+          <span class="chat-notice-inline__time">{formatTimeMs(props.item.timestamp)}</span>
+        </Show>
+        <span class="chat-notice-inline__chevron" aria-hidden="true">
+          <Icon name="chevronRight" />
+        </span>
+      </summary>
+      <NoticeBody text={props.item.text} />
+    </details>
+  );
+}
+
 function OrdinaryNotice(props: ChatNoticeProps) {
   return (
     <div
@@ -158,20 +183,14 @@ function OrdinaryNotice(props: ChatNoticeProps) {
       role={props.item.tone === "danger" ? "alert" : undefined}
     >
       <Show when={props.item.label}>
-        <SystemLine icon={props.item.icon} label={props.item.label!} />
+        <SystemLine
+          icon={props.item.icon}
+          label={props.item.label!}
+          metric={props.item.showTimestamp ? formatTimeMs(props.item.timestamp) : undefined}
+        />
       </Show>
-      <Show
-        when={props.item.collapsedBody && props.item.text}
-        fallback={
-          <Show when={props.item.text}>
-            <NoticeBody text={props.item.text} />
-          </Show>
-        }
-      >
-        <details class="chat-notice__collapse">
-          <summary class="chat-notice__toggle">{t("chat.systemNotice.showContent")}</summary>
-          <NoticeBody text={props.item.text} />
-        </details>
+      <Show when={props.item.text}>
+        <NoticeBody text={props.item.text} />
       </Show>
     </div>
   );
@@ -190,6 +209,9 @@ export function ChatNotice(props: ChatNoticeProps) {
             onRetry={props.onPermissionRetry}
           />
         </div>
+      </Match>
+      <Match when={props.item.collapsedBody && props.item.text}>
+        <InlineNotice item={props.item} />
       </Match>
       <Match when={props.item.skillChanges}>
         <div data-chat-row-key={props.item.key} data-ts={String(props.item.timestamp)}>

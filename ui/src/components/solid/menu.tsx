@@ -1,22 +1,21 @@
-import { dynamic, insert, type JSX } from "@solidjs/web";
+import { dynamic, type JSX } from "@solidjs/web";
 import {
   For,
   Show,
   createEffect,
-  createRoot,
+  createMemo,
   createSignal,
-  getOwner,
-  onCleanup,
+  flush,
   onSettled,
-  runWithOwner,
   untrack,
   merge,
 } from "solid-js";
 import { acquireNativeOverlaySurface } from "../../lib/native-overlay-occlusion.ts";
+import { projectOwner } from "../../lib/reactive/projection.ts";
 import { createOverlayAnchor, type OverlayPlacement } from "../overlay-anchor.ts";
 import { createOverlay, findOverlayParent, type Overlay } from "../overlay-lifecycle.ts";
 import { containsComposed, registryFor } from "../overlay-registry.ts";
-import { useMenuMachine, type MenuBinding } from "./menu-machine.ts";
+import { MENU_FORM_CONTROL_SELECTOR, useMenuMachine, type MenuBinding } from "./menu-machine.ts";
 import { useOverlayControl } from "./overlay-control.ts";
 import { retainShadowStyles } from "./shadow-styles.ts";
 import overlayStyles from "./overlay.css?inline";
@@ -27,6 +26,7 @@ export type MenuItemBindings = Pick<
   "id" | "role" | "tabindex" | "aria-label" | "aria-disabled" | "aria-checked"
 > & {
   [name: `data-${string}`]: string | number | boolean | undefined;
+  ref?: (element: HTMLElement) => void;
   onClick?: (event: MouseEvent) => void;
   onKeyDown?: (event: KeyboardEvent) => void;
   onFocusIn?: (event: FocusEvent) => void;
@@ -56,9 +56,12 @@ export type MenuItem = {
   disabled?: boolean;
   checked?: boolean;
   type?: "checkbox" | "radio";
-  class?: string;
+  class?: JSX.ClassValue;
   variant?: "danger";
-  children?: readonly MenuEntry[];
+  /** Lazy branches construct their entries on first open. */
+  children?: readonly MenuEntry[] | (() => readonly MenuEntry[]);
+  /** Opt this branch into the parent menu's idle preparation. */
+  prewarm?: boolean;
   content?: JSX.Element;
   trigger?: JSX.Element;
   closeOnSelect?: boolean;
@@ -70,18 +73,21 @@ export type MenuEntry =
   | { kind: "content"; id: string; content: JSX.Element }
   | { kind: "group"; id: string; class?: string; items: readonly MenuEntry[] };
 
-export type MenuHandle = { overlay: Overlay; open(): boolean; close(): boolean };
+export type MenuHandle = {
+  overlay: Overlay;
+  open(): boolean;
+  close(): boolean;
+  focusFirst(): void;
+  itemElement(id: string): HTMLElement | undefined;
+};
 
 /** Close through the owner even when a menu surface has moved into the top layer. */
-export function closeMenusWithin(
-  root: Pick<ParentNode, "querySelectorAll"> & { ownerDocument: Document },
-): void {
-  const elements = new Set(root.querySelectorAll('[role="menu"], [aria-haspopup="menu"]'));
+export function closeMenusWithin(root: Pick<Node, "contains"> & { ownerDocument: Document }): void {
   for (const overlay of registryFor(root.ownerDocument).members.keys()) {
     if (
       overlay.open &&
       overlay.surface.getAttribute("role") === "menu" &&
-      (elements.has(overlay.surface) || (overlay.trigger && elements.has(overlay.trigger)))
+      (root.contains(overlay.surface) || (overlay.trigger && root.contains(overlay.trigger)))
     ) {
       overlay.request(false);
     }
@@ -93,13 +99,15 @@ export type MenuProps = {
   id: string;
   label: string;
   items: readonly MenuEntry[];
-  /** Materialize content on first open, then retain it across closes. Stable for this mount. */
-  lazy?: boolean;
+  /** Defer until opened; "while-open" releases transient content after the exit. */
+  lazy?: boolean | "while-open";
+  /** Prepare a closed menu in idle slices after its page content has settled. */
+  prewarm?: boolean;
   trigger?: JSX.Element;
   children?: JSX.Element;
   class?: JSX.HTMLAttributes<HTMLDivElement>["class"];
-  panelClass?: string;
-  triggerClass?: string;
+  panelClass?: JSX.ClassValue;
+  triggerClass?: JSX.ClassValue;
   triggerAttributes?: Pick<
     JSX.ButtonHTMLAttributes<HTMLButtonElement>,
     "title" | "style" | "tabindex" | "aria-hidden" | "aria-keyshortcuts" | "aria-busy" | "value"
@@ -127,15 +135,6 @@ export type MenuProps = {
 
 type BranchProps = MenuProps & { parent?: Overlay; parentBinding?: MenuBinding; root?: Overlay };
 
-function ownItems(surface: HTMLElement) {
-  return [...surface.querySelectorAll<HTMLElement>('[role^="menuitem"]')].filter(
-    (item) =>
-      item.closest('[role="menu"]') === surface &&
-      !item.matches(":disabled") &&
-      item.getAttribute("aria-disabled") !== "true",
-  );
-}
-
 function findItem(entries: readonly MenuEntry[], id: string): MenuItem | undefined {
   for (const entry of entries) {
     if (entry.kind === "group") {
@@ -160,7 +159,7 @@ export function Menu(props: BranchProps): JSX.Element {
   let trigger!: HTMLButtonElement;
   let surface!: HTMLDivElement;
   let anchorBinding: ReturnType<typeof createOverlayAnchor> | undefined;
-  const identity = untrack(() => ({
+  const initialIdentity = untrack(() => ({
     id: props.id,
     triggerId: props.parent
       ? `${props.id}:trigger`
@@ -168,16 +167,27 @@ export function Menu(props: BranchProps): JSX.Element {
     parent: props.parent,
     binding: props.parentBinding,
     root: props.root,
+    lazy: props.lazy,
   }));
   const direction = () => props.dir ?? (document.documentElement.dir === "rtl" ? "rtl" : "ltr");
-  const owner = getOwner();
-  const lazy = untrack(() => props.lazy);
-  let disposeBody: (() => void) | undefined;
-  onCleanup(() => disposeBody?.());
-  const overlay = createOverlay(identity.id, identity.parent, {
+  const initialLazy = initialIdentity.lazy;
+  let cancelPrewarm: (() => void) | undefined;
+  let renderedCount = 0;
+  let extendBody: ((count: number) => void) | undefined;
+  const prewarmEnabled = createMemo(() => props.prewarm === true && !props.disabled);
+  createEffect(prewarmEnabled, (enabled) => {
+    if (enabled && initialLazy === true && renderedCount !== Infinity) {
+      let frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(schedulePrewarm);
+      });
+      cancelPrewarm = () => cancelAnimationFrame(frame);
+    }
+    return () => cancelPrewarm?.();
+  });
+  const overlay = createOverlay(initialIdentity.id, initialIdentity.parent, {
     exclusiveGroup: "menu",
     isValid: (panel) =>
-      (lazy && !disposeBody) ||
+      (initialLazy && !control.bodyMounted()) ||
       Boolean(
         panel.querySelector(
           '[role^="menuitem"], [data-form-control], [data-search], input, textarea, select, button, a[href]',
@@ -186,13 +196,7 @@ export function Menu(props: BranchProps): JSX.Element {
     acquireOcclusion: acquireNativeOverlaySurface,
     onRootChange: (root) =>
       root instanceof ShadowRoot ? retainShadowStyles(root, [overlayStyles]) : undefined,
-    onInitialFocus(intent) {
-      const items = ownItems(overlay.surface);
-      const initial = [
-        ...overlay.surface.querySelectorAll<HTMLElement>("[data-initial-focus], [autofocus]"),
-      ].find((node) => node.closest('[role="menu"]') === overlay.surface);
-      (intent === "last" ? items.at(-1) : (initial ?? items[0]))?.focus({ preventScroll: true });
-    },
+    onInitialFocus: (intent) => focusItem(intent),
     onEscape(event) {
       if (props.onEscape?.(event)) {
         return true;
@@ -210,10 +214,36 @@ export function Menu(props: BranchProps): JSX.Element {
       return false;
     },
   });
-  const menuRoot = identity.root ?? overlay;
+  const formControls = (): HTMLElement[] =>
+    [...overlay.surface.querySelectorAll<HTMLElement>(MENU_FORM_CONTROL_SELECTOR)].filter(
+      (control) =>
+        control.closest('[role="menu"]') === overlay.surface &&
+        ![...overlay.children].some(
+          (child) => child.open && containsComposed(child.surface, control),
+        ) &&
+        (control.tabIndex >= 0 || control.closest('[role^="menuitem"]')) &&
+        !control.matches(':disabled, [aria-disabled="true"]') &&
+        !control.closest("[inert]") &&
+        control.checkVisibility({ checkVisibilityCSS: true }),
+    );
+  const focusItem = (intent: "first" | "last") => {
+    const items = ownItems();
+    const initial = [
+      ...overlay.surface.querySelectorAll<HTMLElement>("[data-initial-focus], [autofocus]"),
+    ].find((node) => node.closest('[role="menu"]') === overlay.surface);
+    (intent === "last"
+      ? (items.at(-1) ?? formControls().at(-1))
+      : (initial ?? items[0] ?? formControls()[0])
+    )?.focus({ preventScroll: true });
+  };
+  const menuRoot = initialIdentity.root ?? overlay;
   const placement = () =>
     props.placement ??
-    (identity.parent ? (direction() === "rtl" ? "left-start" : "right-start") : "bottom-start");
+    (initialIdentity.parent
+      ? direction() === "rtl"
+        ? "left-start"
+        : "right-start"
+      : "bottom-start");
   const activate = (value: string) => {
     const item = findItem(props.items, value);
     if (!item || item.disabled || item.children) {
@@ -232,126 +262,118 @@ export function Menu(props: BranchProps): JSX.Element {
     }
   };
   onSettled(() => overlay.bindSurface(surface));
-  const binding = useMenuMachine(overlay, direction, activate, identity.binding?.service, {
-    ids: { trigger: identity.triggerId },
+  const binding = useMenuMachine(overlay, direction, activate, initialIdentity.binding?.service, {
+    ids: { trigger: initialIdentity.triggerId },
     pointerFocus: () => props.pointerFocus ?? "menu",
   });
-  const [opened, setOpened] = createSignal(false);
-  const connectControl = useOverlayControl(
+  const ownItems = () =>
+    binding.items().filter((item) => !item.matches(':disabled, [aria-disabled="true"]'));
+  const triggerItemRef = initialIdentity.binding?.itemRef();
+  const opened = projectOwner(overlay, (owner) => owner.open, Object.is).read;
+  const control = useOverlayControl(
     overlay,
+    initialLazy,
     merge(props, {
       onBeforeShow(event: Event) {
-        materializeBody();
+        if (initialLazy === true && !event.defaultPrevented) {
+          prepareItems();
+        }
         props.onBeforeShow?.(event);
       },
     }),
+    () => body(),
   );
   createEffect(placement, (value) => {
     if (mounted) {
       anchorBinding?.update(trigger, value);
     }
   });
+  const keydown = (event: KeyboardEvent) => {
+    if (event.defaultPrevented || event.isComposing) {
+      return;
+    }
+    const target = event.target;
+    if (
+      !(target instanceof HTMLElement) ||
+      target.closest('[role="menu"]') !== overlay.surface ||
+      [...overlay.children].some((child) => child.open && containsComposed(child.surface, target))
+    ) {
+      return;
+    }
+    const search = overlay.surface.querySelector<HTMLInputElement>("input[data-search]");
+    const first = ownItems().find(
+      (item) =>
+        !search || Boolean(search.compareDocumentPosition(item) & Node.DOCUMENT_POSITION_FOLLOWING),
+    );
+    if (
+      (target === search && event.key === "ArrowDown") ||
+      (target === first && search && event.key === "ArrowUp")
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      (target === search ? first : search)?.focus({ preventScroll: true });
+      return;
+    }
+    if (event.key !== "Tab") {
+      return;
+    }
+    const controls = formControls();
+    const row = target.closest<HTMLElement>('[role^="menuitem"]');
+    const firstControl = row ? controls.find((element) => row.contains(element)) : undefined;
+    if (
+      firstControl &&
+      ((!event.shiftKey && target === row) || (event.shiftKey && target === firstControl))
+    ) {
+      event.preventDefault();
+      (event.shiftKey ? row : firstControl)?.focus();
+      return;
+    }
+    const candidates = controls.includes(target)
+      ? [...controls, ...ownItems()].toSorted((left, right) =>
+          left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1,
+        )
+      : controls;
+    const next = (event.shiftKey ? candidates.toReversed() : candidates).find(
+      (candidate) =>
+        target.compareDocumentPosition(candidate) &
+        (event.shiftKey ? Node.DOCUMENT_POSITION_PRECEDING : Node.DOCUMENT_POSITION_FOLLOWING),
+    );
+    if (next) {
+      event.preventDefault();
+      next.focus();
+    } else {
+      const destination = props.tabFocusTarget?.(event.shiftKey);
+      if (destination) {
+        event.preventDefault();
+        if (menuRoot.request(false, "none")) {
+          destination.focus({ preventScroll: true });
+        }
+      } else {
+        menuRoot.request(false, "return");
+      }
+    }
+  };
   onSettled(() => {
     mounted = true;
-    if (!identity.parent) {
+    if (!initialIdentity.parent) {
       overlay.setParent(findOverlayParent(trigger));
     }
-    anchorBinding = createOverlayAnchor(overlay.surface);
+    // This menu owns its trigger and surface in the same DOM root.
+    anchorBinding = createOverlayAnchor(overlay.surface, { sameRoot: true });
     anchorBinding.update(trigger, placement());
-    const keydown = (event: KeyboardEvent) => {
-      const target = event.target;
-      if (
-        !(target instanceof HTMLElement) ||
-        target.closest('[role="menu"]') !== overlay.surface ||
-        [...overlay.children].some((child) => child.open && containsComposed(child.surface, target))
-      ) {
-        return;
-      }
-      const search = overlay.surface.querySelector<HTMLInputElement>("input[data-search]");
-      const first = ownItems(overlay.surface).find(
-        (item) =>
-          !search ||
-          Boolean(search.compareDocumentPosition(item) & Node.DOCUMENT_POSITION_FOLLOWING),
-      );
-      if (
-        !event.defaultPrevented &&
-        !event.isComposing &&
-        ((target === search && event.key === "ArrowDown") ||
-          (target === first && search && event.key === "ArrowUp"))
-      ) {
-        event.preventDefault();
-        event.stopPropagation();
-        (target === search ? first : search)?.focus({ preventScroll: true });
-        return;
-      }
-      if (event.key !== "Tab" || event.defaultPrevented || event.isComposing) {
-        return;
-      }
-      const controls = [
-        ...overlay.surface.querySelectorAll<HTMLElement>("[data-form-control]"),
-      ].filter(
-        (control) =>
-          control.closest('[role="menu"]') === overlay.surface &&
-          (control.tabIndex >= 0 || control.closest('[role^="menuitem"]')) &&
-          !control.matches(':disabled, [aria-disabled="true"]') &&
-          !control.closest("[inert]") &&
-          control.checkVisibility({ checkVisibilityCSS: true }),
-      );
-      const row = target.closest<HTMLElement>('[role^="menuitem"]');
-      const firstControl = row ? controls.find((control) => row.contains(control)) : undefined;
-      if (
-        firstControl &&
-        ((!event.shiftKey && target === row) || (event.shiftKey && target === firstControl))
-      ) {
-        event.preventDefault();
-        (event.shiftKey ? row : firstControl)?.focus();
-        return;
-      }
-      const index = controls.indexOf(target);
-      let next = index >= 0 ? controls[index + (event.shiftKey ? -1 : 1)] : undefined;
-      if (target.matches("input[data-search]") && !event.shiftKey) {
-        next = ownItems(overlay.surface).find((item) =>
-          Boolean(target.compareDocumentPosition(item) & Node.DOCUMENT_POSITION_FOLLOWING),
-        );
-      } else if (index === 0 && event.shiftKey) {
-        next = ownItems(overlay.surface).findLast((item) =>
-          Boolean(target.compareDocumentPosition(item) & Node.DOCUMENT_POSITION_PRECEDING),
-        );
-      } else if (index < 0 && !event.shiftKey && target.matches('[role^="menuitem"]')) {
-        next = controls.find((control) =>
-          Boolean(target.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING),
-        );
-      }
-      if (next) {
-        event.preventDefault();
-        next.focus();
-      } else {
-        const destination = untrack(() => props.tabFocusTarget?.(event.shiftKey));
-        if (destination) {
-          event.preventDefault();
-          if (menuRoot.request(false, "none")) {
-            destination.focus({ preventScroll: true });
-          }
-        } else {
-          menuRoot.request(false, "return");
-        }
-      }
-    };
-    overlay.surface.addEventListener("keydown", keydown, true);
-    const disconnectControl = connectControl(
-      () =>
-        props.ref?.({
-          overlay,
-          open: () => overlay.request(true, "first"),
-          close: () => overlay.request(false, "return"),
-        }),
-      setOpened,
+    const disconnectControl = control.connect(() =>
+      props.ref?.({
+        overlay,
+        open: () => overlay.request(true, "first"),
+        close: () => overlay.request(false, "return"),
+        focusFirst: () => focusItem("first"),
+        itemElement: (id) => ownItems().find((item) => item.dataset.value === id),
+      }),
     );
     return () => {
       mounted = false;
       disconnectControl();
       anchorBinding?.dispose();
-      overlay.surface.removeEventListener("keydown", keydown, true);
     };
   });
   const renderEntries = (entries: () => readonly MenuEntry[]): JSX.Element => (
@@ -381,7 +403,9 @@ export function Menu(props: BranchProps): JSX.Element {
                 const Item = dynamic(() =>
                   item().href === undefined ? (item().as ?? "button") : "a",
                 );
-                const renderCustom = untrack(() => item().render);
+                // The keyed leaf retains its renderer; its live bindings carry item changes.
+                const initialRenderCustom = untrack(() => item().render);
+                const itemRef = binding.itemRef();
                 const attributes = merge((): MenuItemBindings => ({
                   ...binding.item(
                     item().id,
@@ -392,10 +416,13 @@ export function Menu(props: BranchProps): JSX.Element {
                   ),
                   role: itemRole(item().type),
                   "aria-label": item().label,
+                  "aria-checked": item().type ? (item().checked ? "true" : "false") : undefined,
+                  "aria-disabled": item().disabled ? "true" : undefined,
                   "data-value": item().id,
+                  ref: itemRef,
                 }));
-                return renderCustom ? (
-                  untrack(() => renderCustom(attributes))
+                return initialRenderCustom ? (
+                  initialRenderCustom(attributes)
                 ) : (
                   <Item
                     {...item().attributes}
@@ -417,8 +444,6 @@ export function Menu(props: BranchProps): JSX.Element {
                     class={["oc-menu-item", item().class]}
                     value={item().attributes?.value ?? item().id}
                     data-variant={item().variant}
-                    aria-checked={item().type ? (item().checked ? "true" : "false") : undefined}
-                    aria-disabled={item().disabled ? "true" : undefined}
                     disabled={item().href === undefined ? item().disabled : undefined}
                   >
                     <Show when={item().type}>
@@ -432,6 +457,7 @@ export function Menu(props: BranchProps): JSX.Element {
                     <span class={["oc-menu-item__label", item().labelClass]}>
                       {item().content ?? item().label}
                     </span>
+
                     <Show when={item().details}>
                       <span class="oc-menu-item__details">{item().details}</span>
                     </Show>
@@ -440,48 +466,60 @@ export function Menu(props: BranchProps): JSX.Element {
               };
               return (
                 <Show when={item().children} fallback={<Leaf />}>
-                  {(children) => (
-                    <Menu
-                      id={`${identity.id}-${item().id}`}
-                      label={item().label}
-                      items={children()}
-                      trigger={
-                        item().trigger ?? (
-                          <>
-                            <Show when={item().icon}>
-                              <span class="oc-menu-item__icon">{item().icon}</span>
-                            </Show>
-                            <span class={["oc-menu-item__label", item().labelClass]}>
-                              {item().label}
-                            </span>
-                            <Show when={item().details}>
-                              <span class="oc-menu-item__details">{item().details}</span>
-                            </Show>
-                          </>
-                        )
-                      }
-                      parent={overlay}
-                      root={menuRoot}
-                      parentBinding={binding}
-                      tabFocusTarget={props.tabFocusTarget}
-                      dir={direction()}
-                      disabled={item().disabled}
-                      triggerClass={item().class}
-                      triggerAttributes={{
-                        "data-value": item().id,
-                        value: item().attributes?.value ?? item().id,
-                        "data-shortcut": item().attributes?.["data-shortcut"],
-                        "aria-keyshortcuts": item().attributes?.["aria-keyshortcuts"],
-                        title: item().attributes?.title,
-                      }}
-                      onSelect={props.onSelect}
-                      onNavigate={props.onNavigate}
-                      onBeforeShow={(event) => item().onBeforeShow?.(event)}
-                      onEscape={(event) => props.onEscape?.(event) ?? false}
-                    >
-                      {item().content}
-                    </Menu>
-                  )}
+                  {(children) => {
+                    const childEntries = createMemo(
+                      () => {
+                        const value = children();
+                        return typeof value === "function" ? value() : value;
+                      },
+                      { lazy: true },
+                    );
+                    return (
+                      <Menu
+                        id={`${initialIdentity.id}-${item().id}`}
+                        label={item().label}
+                        lazy={initialLazy}
+                        prewarm={props.prewarm && item().prewarm}
+                        items={childEntries()}
+                        trigger={
+                          item().trigger ?? (
+                            <>
+                              <Show when={item().icon}>
+                                <span class="oc-menu-item__icon">{item().icon}</span>
+                              </Show>
+                              <span class={["oc-menu-item__label", item().labelClass]}>
+                                {item().label}
+                              </span>
+
+                              <Show when={item().details}>
+                                <span class="oc-menu-item__details">{item().details}</span>
+                              </Show>
+                            </>
+                          )
+                        }
+                        parent={overlay}
+                        root={menuRoot}
+                        parentBinding={binding}
+                        tabFocusTarget={props.tabFocusTarget}
+                        dir={direction()}
+                        disabled={item().disabled}
+                        triggerClass={item().class}
+                        triggerAttributes={{
+                          "data-value": item().id,
+                          value: item().attributes?.value ?? item().id,
+                          "data-shortcut": item().attributes?.["data-shortcut"],
+                          "aria-keyshortcuts": item().attributes?.["aria-keyshortcuts"],
+                          title: item().attributes?.title,
+                        }}
+                        onSelect={props.onSelect}
+                        onNavigate={props.onNavigate}
+                        onBeforeShow={(event) => item().onBeforeShow?.(event)}
+                        onEscape={(event) => props.onEscape?.(event) ?? false}
+                      >
+                        {item().content}
+                      </Menu>
+                    );
+                  }}
                 </Show>
               );
             }}
@@ -490,45 +528,75 @@ export function Menu(props: BranchProps): JSX.Element {
       }}
     </For>
   );
-  const body = () => (
-    <>
-      {props.children}
-      {renderEntries(() => props.items)}
-    </>
-  );
-  const materializeBody = () => {
-    if (lazy && !disposeBody) {
-      runWithOwner(owner, () => {
-        disposeBody = createRoot((dispose) => {
-          insert(surface, body());
-          return dispose;
-        });
-      });
-    }
+  const body = () => {
+    const [limit, setLimit] = createSignal(renderedCount || Infinity);
+    extendBody = setLimit;
+    return (
+      <>
+        {props.children}
+        {renderEntries(() => (limit() === Infinity ? props.items : props.items.slice(0, limit())))}
+      </>
+    );
   };
+  function prepareItems(count = Infinity) {
+    cancelPrewarm?.();
+    cancelPrewarm = undefined;
+    const partial = renderedCount > 0 && renderedCount !== Infinity;
+    renderedCount = count;
+    if (extendBody) {
+      extendBody(count);
+      // Only a partially prepared menu needs a synchronous native-focus commit.
+      if (partial && count === Infinity) {
+        flush();
+      }
+    } else {
+      control.mountBody();
+    }
+  }
+
+  function schedulePrewarm() {
+    const slice = () => {
+      prepareItems(renderedCount + 8);
+      if (renderedCount < props.items.length) {
+        schedulePrewarm();
+      } else {
+        renderedCount = Infinity;
+        extendBody?.(Infinity);
+      }
+    };
+    if (typeof requestIdleCallback === "function") {
+      const idle = requestIdleCallback(slice, { timeout: 3000 });
+      cancelPrewarm = () => cancelIdleCallback(idle);
+    } else {
+      const timer = setTimeout(slice, 50);
+      cancelPrewarm = () => clearTimeout(timer);
+    }
+  }
   return (
     <div class={props.class} dir={direction()}>
       <button
-        {...binding.trigger(identity.binding, props.disabled)}
+        {...binding.trigger(initialIdentity.binding, props.disabled)}
         {...props.triggerAttributes}
         ref={(node) => {
           trigger = node;
           overlay.bindTrigger(node);
+          triggerItemRef?.(node);
         }}
         type="button"
-        id={identity.triggerId}
+        id={initialIdentity.triggerId}
         class={[
-          identity.parent ? "oc-menu-item oc-menu-item--submenu" : "oc-menu-trigger",
+          initialIdentity.parent ? "oc-menu-item oc-menu-item--submenu" : "oc-menu-trigger",
           props.triggerClass,
         ]}
-        role={identity.parent ? "menuitem" : undefined}
+        role={initialIdentity.parent ? "menuitem" : undefined}
         aria-haspopup="menu"
-        aria-controls={`${identity.id}:content`}
+        aria-controls={`${initialIdentity.id}:content`}
         aria-expanded={opened() ? "true" : "false"}
         data-highlighted={
-          identity.binding &&
-          (identity.binding.read().highlightedValue === props.triggerAttributes?.["data-value"] ||
-            identity.binding.read().highlightedValue === identity.triggerId)
+          initialIdentity.binding &&
+          (initialIdentity.binding.read().highlightedValue ===
+            props.triggerAttributes?.["data-value"] ||
+            initialIdentity.binding.read().highlightedValue === initialIdentity.triggerId)
             ? ""
             : undefined
         }
@@ -536,7 +604,7 @@ export function Menu(props: BranchProps): JSX.Element {
         disabled={props.disabled}
       >
         <span class="oc-menu-item__label">{props.trigger ?? props.label}</span>
-        <Show when={identity.parent}>
+        <Show when={initialIdentity.parent}>
           <span class="oc-menu-item__submenu-icon" aria-hidden="true">
             ›
           </span>
@@ -544,10 +612,16 @@ export function Menu(props: BranchProps): JSX.Element {
       </button>
       <div
         {...binding.content()}
+        onKeyDown={(event: KeyboardEvent) => {
+          keydown(event);
+          if (!event.defaultPrevented) {
+            binding.content().onKeyDown(event);
+          }
+        }}
         ref={(node) => {
           surface = node;
         }}
-        id={`${identity.id}:content`}
+        id={`${initialIdentity.id}:content`}
         class={["oc-overlay oc-menu", props.panelClass]}
         popover="manual"
         role="menu"
@@ -559,7 +633,7 @@ export function Menu(props: BranchProps): JSX.Element {
           }
         }}
       >
-        {lazy ? undefined : body()}
+        {initialLazy ? undefined : body()}
       </div>
     </div>
   );

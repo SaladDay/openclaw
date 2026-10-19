@@ -12,6 +12,7 @@ export const SESSION_LIST_SOURCES = [
   "agent-roster",
   "command-palette",
   "skill-workshop",
+  "workboard-lifecycle",
 ] as const;
 
 export const SessionsListParamsSchema = closedObject({
@@ -108,6 +109,12 @@ export const SessionsListParamsSchema = closedObject({
 });
 
 export type SessionsListParams = Static<typeof SessionsListParamsSchema>;
+
+export const SessionsSubscribeParamsSchema = closedObject({
+  ...SessionsListParamsSchema.properties,
+  /** Retain full roster message bodies on this connection, including for plugins. */
+  includeMessageBodies: Type.Optional(Type.Boolean()),
+});
 
 /** One canonical profile owner with at least one visible, matching unarchived session. */
 export const SessionOwnerSessionCountSchema = closedObject({

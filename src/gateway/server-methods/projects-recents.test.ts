@@ -12,8 +12,9 @@ import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { registerProjectRegistry } from "../../projects/project-registry.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.js";
+import { closeOpenClawStateDatabaseByPathAsync } from "../../state/openclaw-state-db-cache.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
-import { getSessionRepositoryWorkspaceStore } from "../../state/session-repository-workspaces.js";
+import * as repositoryWorkspaces from "../../state/session-repository-workspaces.js";
 import { prepareUserProfileCatalog } from "../../state/user-profile-list.js";
 import { linkEmail } from "../../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
@@ -90,7 +91,7 @@ test("projects.list returns only the caller's deterministic resolved recents", a
     const targetProfile = ensureProfileForEmail("target@example.test");
     const foreignProfile = ensureProfileForEmail("foreign@example.test");
     const actor = { type: "human" as const, source: "profile" as const, id: sourceProfile.id };
-    const repository = await getSessionRepositoryWorkspaceStore().create({
+    const repository = await repositoryWorkspaces.getSessionRepositoryWorkspaceStore().create({
       agentId: "main",
       sessionKey: "global",
       url: "https://github.com/octocat/hello-world.git",
@@ -321,9 +322,60 @@ test("projects.list returns only the caller's deterministic resolved recents", a
     expect((afterPublication?.payload as { recents?: unknown[] } | undefined)?.recents).toEqual(
       tiedRecents,
     );
+    const findRepositories = repositoryWorkspaces.findSessionRepositoryWorkspaces;
+    const repositoryRead = vi
+      .spyOn(repositoryWorkspaces, "findSessionRepositoryWorkspaces")
+      .mockImplementationOnce(async (...args) => {
+        const result = await findRepositories(...args);
+        replaceSessionEntrySync(
+          { agentId: "main", sessionKey: tiedKeys[0] },
+          {
+            sessionId: "tie-0",
+            updatedAt: 3_000,
+            createdActor: actor,
+            visibility: "draft",
+            spawnedCwd: "/work/tie-0",
+          },
+        );
+        const changed = projection!.capture({ agentId: "main", key: tiedKeys[0] })!;
+        expect(
+          projection!.readCapabilityEntry({
+            agentId: "main",
+            key: tiedKeys[0],
+            storePath: changed.storeTarget.storePath,
+          })?.entry?.visibility,
+        ).toBe("draft");
+        return result;
+      });
+    try {
+      expect(
+        await invokeProjectMethod(
+          "projects.list",
+          {},
+          cfg,
+          ["operator.write"],
+          targetProfile.id,
+          registeredProjectsHandlers,
+          projection,
+        ),
+      ).toMatchObject({
+        ok: false,
+        error: { message: expect.stringContaining("Project access changed") },
+      });
+      expect(repositoryRead).toHaveBeenCalled();
+    } finally {
+      repositoryRead.mockRestore();
+    }
     const anonymous = await invokeProjectMethod("projects.list", {}, cfg, ["operator.read"]);
     expect(anonymous?.payload).not.toHaveProperty("recents");
-    const external = new (requireNodeSqlite().DatabaseSync)(openOpenClawStateDatabase().path);
+    const databasePath = openOpenClawStateDatabase().path;
+    projection.dispose();
+    projection = undefined;
+    releaseCatalog();
+    releaseCatalog = undefined;
+    await closeOpenClawStateDatabaseByPathAsync(databasePath);
+    // External repairs require offline custody; live writes use the profile owner.
+    const external = new (requireNodeSqlite().DatabaseSync)(databasePath);
     try {
       external
         .prepare("UPDATE user_profiles SET merged_into = ? WHERE id = ?")
@@ -331,6 +383,7 @@ test("projects.list returns only the caller's deterministic resolved recents", a
     } finally {
       external.close();
     }
+    projection = await createSessionRowProjection({ cfg, modelCatalog: [] });
     const afterAliasChange = await invokeProjectMethod(
       "projects.list",
       {},
