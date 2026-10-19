@@ -35,8 +35,7 @@ type MinimaxTextModelDefinition = Omit<ModelDefinitionConfig, "input"> & {
 };
 
 const MINIMAX_API_COSTS = new Map<string, ModelDefinitionConfig["cost"]>([
-  // This preview is Token Plan-only; MiniMax has not published per-token prices.
-  [MINIMAX_M31_MODEL_ID, MINIMAX_HOSTED_COST],
+  [MINIMAX_M31_MODEL_ID, { input: 0.15, output: 0.6, cacheRead: 0.015, cacheWrite: 0 }],
   ["MiniMax-M2.7", { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0.375 }],
   ["MiniMax-M2.5-highspeed", { input: 0.6, output: 2.4, cacheRead: 0.03, cacheWrite: 0.375 }],
   ["MiniMax-M2.5", { input: 0.3, output: 1.2, cacheRead: 0.03, cacheWrite: 0.375 }],

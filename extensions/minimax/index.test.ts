@@ -299,7 +299,7 @@ describe("minimax provider hooks", () => {
           contextWindow: 1_000_000,
           reasoning: true,
           compat: { codeMode: "preferred" },
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          cost: { input: 0.15, output: 0.6, cacheRead: 0.015, cacheWrite: 0 },
         }),
       );
       expect(provider.resolveThinkingProfile?.(ref)).toEqual({
