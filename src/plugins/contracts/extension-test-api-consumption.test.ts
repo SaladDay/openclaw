@@ -12,14 +12,6 @@ const THIS_TEST_FILE = "src/plugins/contracts/extension-test-api-consumption.tes
 const parser = createNativeTypeScriptParser();
 afterAll(() => parser.close());
 
-type ExtensionTestApi = {
-  absoluteStem: string;
-  packageName?: string;
-  packageExportsTestApi: boolean;
-  pluginId: string;
-  repoPath: string;
-};
-
 function listTrackedFiles(pathspecs: string | readonly string[]): string[] {
   const files = listGitTrackedFiles({ pathspecs, repoRoot: REPO_ROOT });
   if (!files) {
@@ -32,7 +24,7 @@ function stripModuleExtension(value: string): string {
   return value.replace(/\.(?:[cm]?[jt]sx?)$/u, "");
 }
 
-function listExtensionTestApis(): ExtensionTestApi[] {
+function listExtensionTestApis() {
   return listTrackedFiles("extensions/*/test-api.ts").map((repoPath) => {
     const pluginId = repoPath.split("/")[1];
     if (!pluginId) {
@@ -70,7 +62,9 @@ function objectStringProperty(node: ts.ObjectLiteralExpression, name: string): s
   return undefined;
 }
 
-function collectTestApiSourceReferences(sourceFile: ts.SourceFile) {
+function collectReferences(source: ts.SourceFile | string) {
+  const sourceFile =
+    typeof source === "string" ? parser.parseSourceFile("source.ts", source) : source;
   const moduleSpecifiers = collectModuleReferencesFromSource(sourceFile)
     .filter((entry) => entry.kind !== "import-meta-url")
     .map((entry) => entry.specifier)
@@ -79,14 +73,13 @@ function collectTestApiSourceReferences(sourceFile: ts.SourceFile) {
 
   function visit(node: ts.Node): void {
     if (ts.isCallExpression(node)) {
-      const name = ts.isIdentifier(node.expression)
-        ? node.expression.text
-        : ts.isPropertyAccessExpression(node.expression)
-          ? node.expression.name.text
-          : undefined;
+      const callee = ts.isPropertyAccessExpression(node.expression)
+        ? node.expression.name
+        : node.expression;
       const pluginId = node.arguments[0];
       if (
-        name === "loadQaRunnerBundledPluginTestApi" &&
+        ts.isIdentifier(callee) &&
+        callee.text === "loadQaRunnerBundledPluginTestApi" &&
         pluginId &&
         ts.isStringLiteralLikeNode(pluginId)
       ) {
@@ -108,7 +101,7 @@ function collectTestApiSourceReferences(sourceFile: ts.SourceFile) {
 function resolveTestApiPluginId(
   specifier: string,
   importerFile: string,
-  testApis: readonly ExtensionTestApi[],
+  testApis: Readonly<ReturnType<typeof listExtensionTestApis>>,
 ): string | undefined {
   const relative = specifier.startsWith(".") || specifier.startsWith("/");
   const stem = stripModuleExtension(
@@ -121,7 +114,7 @@ function resolveTestApiPluginId(
   )?.pluginId;
 }
 
-function collectOrphanExtensionTestApiFiles(): string[] {
+function orphanTestApis(): string[] {
   const testApis = listExtensionTestApis();
   const consumed = new Set(
     testApis.filter((testApi) => testApi.packageExportsTestApi).map((testApi) => testApi.pluginId),
@@ -133,17 +126,16 @@ function collectOrphanExtensionTestApiFiles(): string[] {
     if (pendingSources.length === 0) {
       return;
     }
-    const sources = pendingSources.splice(0);
-    for (const sourceFile of parser.parseSourceFiles(sources)) {
-      const references = collectTestApiSourceReferences(sourceFile);
-      for (const pluginId of references.pluginIds) {
-        if (testApis.some((testApi) => testApi.pluginId === pluginId)) {
-          consumed.add(pluginId);
-        }
-      }
-      for (const specifier of references.moduleSpecifiers) {
-        const pluginId = resolveTestApiPluginId(specifier, sourceFile.fileName, testApis);
-        if (pluginId) {
+    for (const sourceFile of parser.parseSourceFiles(pendingSources.splice(0))) {
+      const references = collectReferences(sourceFile);
+      const pluginIds = [
+        ...references.pluginIds,
+        ...references.moduleSpecifiers.map((specifier) =>
+          resolveTestApiPluginId(specifier, sourceFile.fileName, testApis),
+        ),
+      ];
+      for (const pluginId of pluginIds) {
+        if (pluginId && testApis.some((testApi) => testApi.pluginId === pluginId)) {
           consumed.add(pluginId);
         }
       }
@@ -183,14 +175,10 @@ function collectOrphanExtensionTestApiFiles(): string[] {
     .toSorted();
 }
 
-function parseReferences(source: string) {
-  return collectTestApiSourceReferences(parser.parseSourceFile("source.ts", source));
-}
-
 describe("extension test API consumption", () => {
   it("ignores identifier text and generic loader implementations", () => {
     expect(
-      parseReferences(`
+      collectReferences(`
         const testing = {};
         function loadQaRunnerBundledPluginTestApi(pluginId: string) {
           return load({ pluginId, artifactBasename: "test-api.js" });
@@ -201,7 +189,7 @@ describe("extension test API consumption", () => {
 
   it("collects real module edges and literal plugin loaders", () => {
     expect(
-      parseReferences(`
+      collectReferences(`
         import { testing } from "@openclaw/example/test-api.js";
         export { helper } from "../test-api.js";
         type TestApi = typeof import("./test-api.js");
@@ -216,7 +204,7 @@ describe("extension test API consumption", () => {
 
   it(
     "keeps only consumed extension test APIs",
-    () => expect(collectOrphanExtensionTestApiFiles()).toStrictEqual([]),
+    () => expect(orphanTestApis()).toStrictEqual([]),
     240_000,
   );
 });
