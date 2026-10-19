@@ -501,22 +501,14 @@ async function removeAuthProfileTargetsWithLocks(
                     }
                     return { save: true, restore: compensation };
                   },
-                  async publish(restored, restoreOwner, ...publicationArgs) {
-                    if (restored) {
-                      await publishAuthProfileStoreUpdate(
-                        restoreOwner,
-                        restored,
-                        ...publicationArgs,
-                      );
-                    }
-                  },
+                  publish: publishAuthProfileStoreUpdate,
                 }),
               );
             }
             updated = committed.store;
             await publishAuthProfileStoreUpdate(
-              owner,
               committed,
+              owner,
               assertCurrent,
               nativeCommits,
               committedIsCurrent,

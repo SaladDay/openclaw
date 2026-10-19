@@ -638,8 +638,8 @@ export function createAuthProfileStoreUpdater(
           if (committed) {
             try {
               await publishAuthProfileStoreUpdate(
-                owner,
                 committed,
+                owner,
                 assertCurrent,
                 nativeCommits,
                 committedIsCurrent,

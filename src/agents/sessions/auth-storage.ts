@@ -314,17 +314,7 @@ class SqliteAuthStorageBackend implements StorageBackend {
               },
             };
       },
-      async publish(committed, owner, assertCurrent, nativeCommits, committedIsCurrent) {
-        if (committed) {
-          await publishAuthProfileStoreUpdate(
-            owner,
-            committed,
-            assertCurrent,
-            nativeCommits,
-            committedIsCurrent,
-          );
-        }
-      },
+      publish: publishAuthProfileStoreUpdate,
     });
     this.captureCredentialSources(selected.store, selected.databasePath);
     return selected.result;

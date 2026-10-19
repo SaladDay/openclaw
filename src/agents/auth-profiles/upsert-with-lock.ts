@@ -314,17 +314,9 @@ export async function persistAuthProfileBatch(
             options: { filterExternalAuthProfiles: false, syncExternalCli: false },
           };
         },
-        async publish(committed, owner, assertCurrent, nativeCommits, committedIsCurrent) {
+        async publish(committed, owner, ...publicationArgs) {
           preparedOwner = owner;
-          if (committed) {
-            await publishAuthProfileStoreUpdate(
-              owner,
-              committed,
-              assertCurrent,
-              nativeCommits,
-              committedIsCurrent,
-            );
-          }
+          await publishAuthProfileStoreUpdate(committed, owner, ...publicationArgs);
         },
       });
 
@@ -403,17 +395,7 @@ export async function persistAuthProfileBatch(
                   options: { filterExternalAuthProfiles: false, syncExternalCli: false },
                 };
               },
-              async publish(committed, owner, assertCurrent, nativeCommits, committedIsCurrent) {
-                if (committed) {
-                  await publishAuthProfileStoreUpdate(
-                    owner,
-                    committed,
-                    assertCurrent,
-                    nativeCommits,
-                    committedIsCurrent,
-                  );
-                }
-              },
+              publish: publishAuthProfileStoreUpdate,
             });
             return { unrevertedProfileIds };
           })().catch((error: unknown) => {

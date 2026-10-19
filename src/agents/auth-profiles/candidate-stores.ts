@@ -340,8 +340,8 @@ async function runCandidateAuthProfileUpdate(
       if (committed) {
         try {
           await publishAuthProfileStoreUpdate(
-            owner,
             committed,
+            owner,
             assertCurrent,
             nativeCommits,
             committedIsCurrent,

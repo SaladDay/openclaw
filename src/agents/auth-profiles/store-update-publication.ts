@@ -112,12 +112,15 @@ export function createAuthProfileStoreUpdatePublication(params: {
 
 /** Publish affected owners from committed facts, rereading only an overtaken result. */
 export async function publishAuthProfileStoreUpdate(
+  committed: AuthStoreUpdateCommitted | undefined,
   owner: PreparedAuthProfileStoreOwner,
-  committed: AuthStoreUpdateCommitted,
   assertCurrent: () => void,
   nativeCommits: ReturnType<typeof watchAuthProfileNativeCommits>,
   committedIsCurrent: () => boolean,
 ): Promise<void> {
+  if (!committed) {
+    return;
+  }
   assertCurrent();
   const shared = owner.databasePath === owner.sharedDatabasePath;
   let currentStore = committed.store;
