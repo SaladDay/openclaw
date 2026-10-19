@@ -201,27 +201,17 @@ it("uses the resolved identity absence instead of a stale roster avatar URL", ()
   ).toBeNull();
 });
 
-it("ignores remote http avatars so the control UI falls back to a local badge", () => {
-  expect(
-    resolveAgentAvatarUrl({ identity: { avatarUrl: "https://example.com/avatar.png" } }),
-  ).toBeNull();
-});
-
-it("ignores protocol-relative avatars so the control UI cannot be tricked into a cross-origin fetch", () => {
-  expect(
-    resolveAgentAvatarUrl({ identity: { avatarUrl: "//evil.example/avatar.png" } }),
-  ).toBeNull();
-});
-it("accepts a blob: URL produced by an authenticated avatar fetch", () => {
-  expect(resolveChatAvatarRenderUrl("blob:http://localhost/uuid-123", avatarAgent)).toBe(
-    "blob:http://localhost/uuid-123",
-  );
-});
-
-it("rejects remote URLs passed as the render candidate", () => {
-  expect(resolveChatAvatarRenderUrl("https://example.com/avatar.png", avatarAgent)).toBe(
-    "/avatar/main",
-  );
+it.each(["https://example.com/avatar.png", "//evil.example/avatar.png"])(
+  "rejects cross-origin roster avatar %s",
+  (avatarUrl) => {
+    expect(resolveAgentAvatarUrl({ identity: { avatarUrl } })).toBeNull();
+  },
+);
+it.each([
+  ["blob:http://localhost/uuid-123", "blob:http://localhost/uuid-123"],
+  ["https://example.com/avatar.png", "/avatar/main"],
+])("renders chat avatar %s as %s", (candidate, expected) => {
+  expect(resolveChatAvatarRenderUrl(candidate, avatarAgent)).toBe(expected);
 });
 it("prefers an explicit empty agent filter over inherited defaults", () => {
   expect(
