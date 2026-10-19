@@ -14,7 +14,7 @@ import type { InputProvenance } from "../sessions/input-provenance.js";
 import { captureAgentTurnPrincipal } from "./agent-turn/principal.js";
 import { captureGatewayAuthPolicy } from "./auth-policy.js";
 import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
-import { restoreGatewayOperatorRecovery } from "./operator-run-recovery.js";
+import { restoreGatewayRunRecovery } from "./operator-run-recovery.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import { createOperatorClient } from "./server-plugin-in-process-dispatch.test-support.js";
 
@@ -155,6 +155,15 @@ export async function createOperatorRecoveryFixture(params: {
     retire: () => {
       current = false;
     },
-    restore: () => restoreGatewayOperatorRecovery({ target, context, assertCurrent }),
+    restore: async () =>
+      (
+        await restoreGatewayRunRecovery({
+          target,
+          context,
+          assertCurrent,
+          restoreOperator: true,
+          restoreRequester: false,
+        })
+      ).operator,
   };
 }

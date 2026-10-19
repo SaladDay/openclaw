@@ -303,6 +303,7 @@ describe("runAgentStep", () => {
       if (route === "cron-fallback") {
         const start = await startSessionsSendAgentRun({
           cfg: config,
+          admissionConfig: config,
           callGateway: async () => {
             throw new Error("Fallback used original target transport");
           },

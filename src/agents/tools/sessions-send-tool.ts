@@ -21,7 +21,6 @@ import {
   classifySessionKeyShape,
   isUnscopedSessionKeySentinel,
   normalizeAgentId,
-  normalizeAgentIdStrict,
 } from "../../routing/session-key.js";
 import { annotateInterSessionPromptText } from "../../sessions/input-provenance.js";
 import { isCronRunSessionKey, parseAgentSessionKey } from "../../sessions/session-key-utils.js";
@@ -38,7 +37,7 @@ import {
   SESSIONS_SEND_TOOL_DISPLAY_SUMMARY,
 } from "../tool-description-presets.js";
 import { ToolInputError } from "../tool-input-error.js";
-import { readToolStringParam, type AnyAgentTool } from "./common.js";
+import type { AnyAgentTool } from "./common.js";
 import { wrapGatewayPersonalToolExecution } from "./gateway-caller-context.js";
 import { callAgentToolGatewayRequest } from "./in-process-gateway.js";
 import {
@@ -81,6 +80,7 @@ import {
 import {
   readSessionsSendMessage,
   readSessionsSendMode,
+  readSessionsSendTarget,
   readSessionsSendTimeout,
 } from "./sessions-send-tool.input.js";
 import { SessionsSendToolSchema, SessionsSendOutputSchema } from "./sessions-send-tool.schema.js";
@@ -137,18 +137,11 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
       }
       const { readTarget: readSession, readRequester } = createSessionsSendSessionReaders(cfg);
 
-      const sessionKeyParam = readToolStringParam(params, "sessionKey");
-      const labelParam = readToolStringParam(params, "label");
-      const labelAgentIdInput = readToolStringParam(params, "agentId");
-      const normalizedLabelAgentId =
-        labelAgentIdInput === undefined ? null : normalizeAgentIdStrict(labelAgentIdInput);
-      if (normalizedLabelAgentId && !normalizedLabelAgentId.ok) {
-        return sendFailure(
-          "error",
-          `Agent "${labelAgentIdInput}" not found. Run openclaw agents list to see configured agents.`,
-        );
+      const targetInput = readSessionsSendTarget(params);
+      if (!targetInput.ok) {
+        return sendFailure("error", targetInput.error);
       }
-      const explicitTargetAgentId = normalizedLabelAgentId?.value;
+      const { sessionKeyParam, labelParam, labelAgentIdInput, explicitTargetAgentId } = targetInput;
 
       let sessionKey = sessionKeyParam;
       let resolvedTargetAgentId: string | undefined;
@@ -612,6 +605,7 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
             const ownChild = targetSessionEntry?.spawnedBy === requesterSession.canonicalKey;
             const startParams: Parameters<typeof dispatchSessionsSendFollowup>[0] = {
               cfg,
+              admissionConfig: communication.admissionConfig,
               callGateway: communication.callGateway,
               captureReplyAdmission: communication.captureReplyAdmission,
               runId,

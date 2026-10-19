@@ -201,6 +201,10 @@ it("keeps an authenticated peer follow-up internal while retaining its operator 
       isRestartAbort: () => false,
       resolveDeliveryContext: () => undefined,
       operatorAuthority,
+      requesterOrigin: {
+        sessionKey: "agent:main:dashboard:peer-source",
+        operatorProfileId: "peer-operator",
+      },
       sourceReplyDeliveryMode: "message_tool_only",
       inputProvenance: {
         kind: "inter_session",
