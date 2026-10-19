@@ -310,6 +310,9 @@ async function recoverSessionSendDeliveriesForAgents(
                       delivery.target.lifecycleRevision ?? null,
                     idempotencyKey: delivery.runId,
                     message: delivery.message,
+                    ...(delivery.returnedResult
+                      ? { extraSystemPrompt: delivery.returnedResult.extraSystemPrompt }
+                      : {}),
                     inputProvenance: input.message.provenance,
                     deliver: false,
                     sourceReplyDeliveryMode: "message_tool_only",
@@ -317,7 +320,11 @@ async function recoverSessionSendDeliveriesForAgents(
                     lane: resolveNestedAgentLaneForSession(delivery.target.sessionKey),
                   },
                   undefined,
-                  { signal, assertAdmissionCurrent: guard },
+                  {
+                    signal,
+                    assertAdmissionCurrent: guard,
+                    ...(delivery.returnedResult ? { replyExpectation: "optional" as const } : {}),
+                  },
                 ),
               );
             } finally {

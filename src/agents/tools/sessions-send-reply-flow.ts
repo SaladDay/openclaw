@@ -18,6 +18,7 @@ import { runOutsidePreparedModelRuntimePluginGenerationScope } from "../prepared
 import { isTerminalAgentWaitTimeout, waitForAgentRunReply } from "../run-wait.js";
 import { resolveSubagentAnnounceTimeoutMs } from "../subagents/announce/subagent-announce-delivery-retry.js";
 import type { FollowupCompletionOwner } from "../subagents/completion/session-followup-completion.types.js";
+import type { AgentStepSession } from "./agent-step.js";
 import {
   callAgentToolGatewayRequest,
   runWithGatewayToolContinuationContext,
@@ -218,12 +219,15 @@ export function prepareSessionsSendReplyContext(params: {
   isIsolatedCronRequester: boolean;
   targetIsSubagent: boolean;
   requesterSessionKey: string;
-  targetSession: Parameters<typeof isRequesterParentOfBackgroundAcpSession>[0];
+  targetSession:
+    | (NonNullable<Parameters<typeof isRequesterParentOfBackgroundAcpSession>[0]> &
+        AgentStepSession)
+    | undefined;
   requesterTarget: GatewaySessionStoreTargetWithStore;
   requesterSessionId?: string;
   context: Omit<
     SessionsSendReplyContext,
-    "replyMode" | "requesterSession" | "requesterDeliveryGeneration"
+    "replyMode" | "requesterSession" | "requesterDeliveryGeneration" | "targetSession"
   >;
 }): SessionsSendReplyContext {
   const requesterSessionEntry = params.requesterTarget.store[params.requesterTarget.canonicalKey];
@@ -254,6 +258,12 @@ export function prepareSessionsSendReplyContext(params: {
     ...params.context,
     requesterSession,
     requesterDeliveryGeneration,
+    targetSession: params.targetSession
+      ? {
+          sessionId: params.targetSession.sessionId,
+          lifecycleRevision: params.targetSession.lifecycleRevision,
+        }
+      : undefined,
     replyMode: taskOwned ? undefined : params.targetIsSubagent ? "one-way" : "peer",
   };
 }
@@ -346,6 +356,7 @@ export async function finishSessionsSendReply(params: {
       completion,
       skip: registryCompletion || delayedDelivery.status === "skipped",
       targetSessionKey: acceptedTargetSessionKey,
+      targetSession: start.a2aSession ?? replyContext.targetSession,
       displayKey: start.a2aSessionKey ?? replyContext.displayKey,
       notifyRequesterOnWaitFailure: notifyRequesterOnWaitFailure && !isIsolatedCronRequester,
     });

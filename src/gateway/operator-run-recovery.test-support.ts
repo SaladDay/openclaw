@@ -10,6 +10,7 @@ import { loadPairedDevicePairingStoreRecordReadOnly } from "../infra/device-pair
 import { persistDevicePairingStoreState } from "../infra/device-pairing-store.js";
 import type { PairedDevice } from "../infra/device-pairing.types.js";
 import type { GatewayAccessGrantRef } from "../plugins/gateway-access-policy.types.js";
+import type { InputProvenance } from "../sessions/input-provenance.js";
 import { captureAgentTurnPrincipal } from "./agent-turn/principal.js";
 import { captureGatewayAuthPolicy } from "./auth-policy.js";
 import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
@@ -33,6 +34,7 @@ export async function createOperatorRecoveryFixture(params: {
   localOperator?: boolean;
   sourceIngress?: "control-ui" | "internal";
   sourceRunId?: string;
+  inputProvenance?: InputProvenance;
 }) {
   let config = params.config;
   const context = params.context;
@@ -127,6 +129,7 @@ export async function createOperatorRecoveryFixture(params: {
       agentId: target.agentId,
       sessionKey: target.sessionKey,
       sourceRunId: target.sourceRunId,
+      inputProvenance: params.inputProvenance,
     }),
     "host-captured recovery source",
   );

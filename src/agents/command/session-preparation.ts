@@ -50,11 +50,7 @@ export function prepareCommandSessionRecoveryEntry(
     });
   const operatorSource =
     entry.restartRecoveryDeliveryRunId !== runId &&
-    ((!sourceOptions.sourceRunId &&
-      (!opts.inputProvenance || opts.inputProvenance.kind === "external_user")) ||
-      (sourceOptions.sourceRunId === runId &&
-        opts.inputProvenance?.kind === "inter_session" &&
-        opts.inputProvenance.sourceTool === "subagent_settle"))
+    (!sourceOptions.sourceRunId || sourceOptions.sourceRunId === runId)
       ? createRestartRecoveryOperatorSource({
           authority: opts.operatorAuthority,
           entry: { ...entry, sessionId },
@@ -95,7 +91,11 @@ export function prepareCommandSessionRecoveryEntry(
           ? {
               operatorSource,
               sourceRunId: runId,
-              sourceIngress: sourceOptions.sourceIngress ?? operatorSource.snapshot.sourceIngress,
+              sourceIngress:
+                sourceOptions.sourceIngress ??
+                (opts.inputProvenance?.kind === "inter_session"
+                  ? "internal"
+                  : operatorSource.snapshot.sourceIngress),
             }
           : {}),
       }),

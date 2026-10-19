@@ -32,6 +32,7 @@ import { createDeferredCore } from "../../shared/deferred.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
 import { listAgentIds } from "../agent-scope.js";
 import { resolveSenderRestrictedSpawnError } from "../spawn-requester-policy.js";
+import type { AgentStepSession } from "./agent-step.js";
 import { jsonResult } from "./common.js";
 import {
   captureGatewayToolCallerAssertion,
@@ -140,6 +141,7 @@ type SessionsSendDeliveryParams = {
   sourceOrigin?: DeliveryContext;
   /** A Cron fallback is another exact recipient and needs its own admission. */
   prepareFallback?: (sessionKey: string) => Promise<{
+    targetSession?: AgentStepSession;
     callGateway: AgentToolGatewayRequestCaller;
     assertCurrent: () => void;
     close: () => void;
@@ -154,6 +156,7 @@ export type SessionsSendStart =
       targetDisposition: "queued" | "steered";
       steeredRunId?: string;
       a2aSessionKey?: string;
+      a2aSession?: AgentStepSession;
     }
   | { ok: false; result: ReturnType<typeof jsonResult<Record<string, unknown>>> };
 
@@ -422,7 +425,9 @@ export async function startSessionsSendAgentRun(
       ok: true,
       runId: responseRunId,
       targetDisposition: "queued",
-      ...(fallbackSessionKey ? { a2aSessionKey: fallbackSessionKey } : {}),
+      ...(fallbackSessionKey
+        ? { a2aSessionKey: fallbackSessionKey, a2aSession: fallback?.targetSession }
+        : {}),
     };
   } catch (err) {
     return deliveryFailure(params, err);

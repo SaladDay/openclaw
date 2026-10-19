@@ -32,6 +32,12 @@ export function createRestartRecoveryOperatorSource(params: {
     params.inputProvenance.sourceChannel === "internal" &&
     params.sourceRunId.startsWith("announce:requester-settle:") &&
     Boolean(params.inputProvenance.sourceSessionKey?.trim());
+  // Accepted peer follow-ups own a fresh target turn. Preserve the admitted
+  // operator basis, not the sender run capability that ends at acceptance.
+  const peerFollowup =
+    params.inputProvenance?.kind === "inter_session" &&
+    params.inputProvenance.sourceTool === "sessions_send" &&
+    Boolean(params.inputProvenance.sourceSessionKey?.trim());
   // Dashboard roots link to main for grouping; only execution lineage excludes
   // recovery. Treating parentSessionKey as delegation strips real operator turns.
   if (
@@ -46,7 +52,8 @@ export function createRestartRecoveryOperatorSource(params: {
     entry.cronRunContinuation ||
     (params.inputProvenance &&
       params.inputProvenance.kind !== "external_user" &&
-      !requesterSettle) ||
+      !requesterSettle &&
+      !peerFollowup) ||
     isCronSessionKey(sessionKey) ||
     isSubagentSessionKey(sessionKey) ||
     isAcpSessionKey(sessionKey) ||

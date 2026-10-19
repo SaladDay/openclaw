@@ -51,6 +51,39 @@ import {
 /** A current permission decision rejected delivery, rather than an unavailable dependency. */
 export class SessionCommunicationDeniedError extends Error {}
 
+/** Read through the selected storage owner, including private in-memory sessions. */
+export async function readSessionCommunicationEndpoint(params: {
+  config: OpenClawConfig;
+  endpoint: Pick<CommunicationEndpoint, "agentId" | "sessionKey" | "storePath">;
+  assertCurrent: () => void;
+}): Promise<CommunicationEndpoint> {
+  const source = captureSessionActorStorageOwner(params.endpoint, {
+    assertCurrent: params.assertCurrent,
+    authorize() {},
+  });
+  if (source) {
+    return {
+      agentId: source.agentId,
+      sessionKey: params.endpoint.sessionKey,
+      storePath: source.path,
+      entry: readCapturedSessionActorEntry(source, params.endpoint.sessionKey),
+    };
+  }
+  const loaded = await resolveGatewaySessionStoreTargetInWorker({
+    cfg: params.config,
+    key: params.endpoint.sessionKey,
+    agentId: params.endpoint.agentId,
+    assertActive: params.assertCurrent,
+    projection: "full",
+  });
+  return {
+    agentId: loaded.agentId,
+    sessionKey: loaded.canonicalKey,
+    storePath: loaded.readSource?.path ?? loaded.storePath,
+    entry: loaded.store[loaded.canonicalKey],
+  };
+}
+
 /** One prepared peer operation; identity bounds never choose its completion route. */
 export async function prepareSessionsSendCommunication(params: {
   config: OpenClawConfig;
@@ -194,33 +227,12 @@ export async function prepareSessionsSendCommunication(params: {
       dirty = true;
     }
   });
-  const read = async (endpoint: CommunicationEndpoint): Promise<CommunicationEndpoint> => {
-    const source = captureSessionActorStorageOwner(endpoint, {
+  const read = (endpoint: CommunicationEndpoint) =>
+    readSessionCommunicationEndpoint({
+      config: currentConfig,
+      endpoint,
       assertCurrent: assertSource,
-      authorize() {},
     });
-    if (source) {
-      return {
-        agentId: source.agentId,
-        sessionKey: endpoint.sessionKey,
-        storePath: source.path,
-        entry: readCapturedSessionActorEntry(source, endpoint.sessionKey),
-      };
-    }
-    const loaded = await resolveGatewaySessionStoreTargetInWorker({
-      cfg: currentConfig,
-      key: endpoint.sessionKey,
-      agentId: endpoint.agentId,
-      assertActive: assertSource,
-      projection: "full",
-    });
-    return {
-      agentId: loaded.agentId,
-      sessionKey: loaded.canonicalKey,
-      storePath: loaded.readSource?.path ?? loaded.storePath,
-      entry: loaded.store[loaded.canonicalKey],
-    };
-  };
   const lineage = async (endpoint: CommunicationEndpoint) => {
     const chain = [endpoint];
     while (chain.at(-1)?.entry?.spawnedBy) {
@@ -597,6 +609,10 @@ export async function prepareSessionsSendCommunication(params: {
               },
               sandboxed,
               message: dispatchMessage,
+              ...(request.replyExpectation === "optional" &&
+              typeof input.extraSystemPrompt === "string"
+                ? { returnedResult: { extraSystemPrompt: input.extraSystemPrompt } }
+                : {}),
             },
           },
           dispatch,
@@ -610,6 +626,12 @@ export async function prepareSessionsSendCommunication(params: {
       callGateway,
       ownedTask,
       sourceSandboxed: sandboxed,
+      targetSession: target[0]!.entry
+        ? {
+            sessionId: target[0]!.entry.sessionId,
+            lifecycleRevision: target[0]!.entry.lifecycleRevision,
+          }
+        : undefined,
       close,
     };
   } catch (error) {

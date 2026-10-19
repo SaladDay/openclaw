@@ -32,7 +32,12 @@ delegated request. This includes authenticated non-browser clients whose ingress
 is labeled internal. Before execution, the Gateway restores the exact operator
 source under current identity and access policy; a revoked source cannot resume.
 The existing source-authorization and delivery checks still apply; a transcript
-message alone cannot restore missing sender authority.
+message alone cannot restore missing sender authority. Accepted `sessions_send`
+follow-ups into main chat sessions also retain their admitted operator source,
+so they resume after a restart without another user message. They remain
+internal inputs: recovery does not inherit a sender's channel delivery rights,
+and a follow-up without an authenticated operator source cannot reconstruct
+authority from its transcript.
 
 This includes automation turns running in dashboard main sessions. If a restart
 exhausts its drain budget, cancellation preserves restart recovery even when the
@@ -1334,3 +1339,20 @@ Use the session transcript and recorded delivery outcome to verify completion.
 - Standalone embedded turns cannot take over a main session with pending
   restart recovery because they do not share the gateway's lifecycle owner.
   Run the turn through the gateway or reset it there with `/new` or `/reset`.
+
+## Automatic peer results
+
+Automatic results returned by `sessions_send` use the same communication admission
+and pending-input recovery as peer requests. Admission checks the originally
+captured source and destination session incarnations against current access and
+communication policy. A saved result retains its intake instructions and optional
+reply expectation: processing it after restart does not require an acknowledgment
+or send another reply back to the peer. These saved facts do not restore sender
+authority. Recovery still requires current endpoint permissions, and cancelled
+inputs are not replayed. Task-owned `subagent_announce` completions retain their
+separate existing recovery owner. Concurrent history reads during startup retain
+the same interrupted disposition, so opening a chat cannot hide a saved update
+from the recovery pass. If a restored background event temporarily owns an
+interrupted session, startup recovery waits for that owner to release and
+rechecks the session. It does not take over live work or replay work that
+completed, was stopped, or was replaced in the meantime.

@@ -512,7 +512,11 @@ export function createReplyRestartRecoveryClaimController(params: {
         ? "channel"
         : transfersControlUiClaim
           ? "control-ui"
-          : operatorSource?.snapshot.sourceIngress,
+          : operatorSource
+            ? params.inputProvenance?.kind === "inter_session"
+              ? "internal"
+              : operatorSource.snapshot.sourceIngress
+            : undefined,
       restartRecoverySourceReplyDeliveryMode: transfersControlUiClaim
         ? undefined
         : params.sourceReplyDeliveryMode,

@@ -180,10 +180,18 @@ it.each([
   },
 );
 
-it.each(["subagent_settle", "subagent_announce", "sessions_send"])(
-  "retains original operator recovery custody only for the exact requester settle source: %s",
-  (sourceTool) => {
-    const runId = "announce:requester-settle:main:agent:main:main:child-run";
+it.each([
+  { sourceTool: "subagent_settle", authenticated: true },
+  { sourceTool: "subagent_announce", authenticated: true },
+  { sourceTool: "sessions_send", authenticated: true },
+  { sourceTool: "sessions_send", authenticated: false },
+])(
+  "retains only admitted operator recovery custody ($sourceTool, authenticated=$authenticated)",
+  ({ sourceTool, authenticated }) => {
+    const runId =
+      sourceTool === "subagent_settle"
+        ? "announce:requester-settle:main:agent:main:main:child-run"
+        : "peer-followup-run";
     const operatorAuthority = createAdmittedRunOperatorAuthority({
       profileId: "original-operator",
       scopes: ["operator.read"],
@@ -221,16 +229,16 @@ it.each(["subagent_settle", "subagent_announce", "sessions_send"])(
       isSessionRollover: false,
       opts: {
         message: "Child completed",
-        operatorAuthority,
+        operatorAuthority: authenticated ? operatorAuthority : undefined,
         inputProvenance: {
           kind: "inter_session",
           sourceTool,
-          sourceChannel: "internal",
+          sourceChannel: sourceTool === "sessions_send" ? "webchat" : "internal",
           sourceSessionKey: "agent:main:subagent:child",
         },
       },
     });
-    if (sourceTool !== "subagent_settle") {
+    if (!authenticated || sourceTool === "subagent_announce") {
       expect(nextEntry.restartRecoveryOperatorSource).toBeUndefined();
       return;
     }
