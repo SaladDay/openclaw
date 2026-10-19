@@ -1,5 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { safeParseJsonRecord } from "@openclaw/normalization-core/json-coercion";
+import {
+  getAgentRunContext,
+  hasAgentRunContextExecutionOwner,
+  listLiveAgentRunIds,
+} from "../infra/agent-run-registry.js";
 import type { GatewayScheduler, GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import { logWarn } from "../logger.js";
 import { enqueueKeyedTask } from "../plugin-sdk/keyed-async-queue.js";
@@ -7,6 +12,7 @@ import { parseAgentSessionKey } from "../routing/session-key.js";
 import { compareMcpCatalogTools } from "./agent-bundle-mcp-names.js";
 import { sessionMcpRuntimeOwners } from "./agent-bundle-mcp-runtime-owner.js";
 import {
+  SessionMcpRuntimeCapacityError,
   SESSION_MCP_MAX_LIVE_RUNTIMES,
   SESSION_MCP_RUNTIME_SWEEP_INTERVAL_MS,
   type CreateSessionMcpRuntime,
@@ -129,19 +135,42 @@ export function createSessionMcpRuntimeManagerLifecycle(
     idleSweepJob: undefined,
   };
   let schedulerScope = store.scheduler.scope();
-  const reserveRuntimeSlot = (
+  let capacityNoticeActive = false;
+  const capacityRefusal = () => {
+    const refusal = new SessionMcpRuntimeCapacityError(!capacityNoticeActive);
+    if (refusal.notify) {
+      logWarn(`bundle-mcp: ${refusal.message}`);
+    }
+    capacityNoticeActive = true;
+    return refusal;
+  };
+  const reserveRuntimeSlot = async (
     existing: SessionMcpRuntime | undefined,
     hasServers: boolean,
-  ): { idleTtlMs: number } => {
+  ): Promise<{ idleTtlMs: number }> => {
     const slot = (existing && store.runtimeSlots.get(existing)) ?? { idleTtlMs: 0 };
     if (!hasServers || store.liveRuntimeSlots.has(slot)) {
       return slot;
     }
-    if (store.liveRuntimeSlots.size >= SESSION_MCP_MAX_LIVE_RUNTIMES) {
-      const message = `bundle-mcp: live runtime limit (${SESSION_MCP_MAX_LIVE_RUNTIMES}) reached; stop or reset unused sessions before connecting another MCP runtime`;
-      logWarn(message);
-      throw new Error(message);
+    while (store.liveRuntimeSlots.size >= SESSION_MCP_MAX_LIVE_RUNTIMES) {
+      const idle = [...store.runtimesBySessionId]
+        .filter(([key, runtime]) => {
+          const currentSlot = store.runtimeSlots.get(runtime);
+          return (
+            currentSlot !== undefined &&
+            store.liveRuntimeSlots.has(currentSlot) &&
+            isRuntimeIdle(key, runtime)
+          );
+        })
+        .toSorted(([, a], [, b]) => a.lastUsedAt - b.lastUsedAt)[0];
+      if (!idle) {
+        throw capacityRefusal();
+      }
+      // Unpublish before yielding; successors reconnect under their own key queue.
+      // The slot stays occupied until disposal confirms physical closure.
+      await retireIdleRuntimes([{ runtimeKey: idle[0], runtime: idle[1] }]);
     }
+    capacityNoticeActive = false;
     store.liveRuntimeSlots.add(slot);
     return slot;
   };
@@ -290,25 +319,26 @@ export function createSessionMcpRuntimeManagerLifecycle(
     return run;
   };
 
-  const sweepIdleRuntimes = async (): Promise<number> => {
-    const nowMs = store.scheduler.now();
-    const expired: Array<{ runtimeKey: string; runtime: SessionMcpRuntime }> = [];
-    for (const [runtimeKey, runtime] of store.runtimesBySessionId.entries()) {
-      const idleTtlMs = store.runtimeSlots.get(runtime)?.idleTtlMs ?? 0;
-      if (idleTtlMs === 0 || (runtime.activeLeases ?? 0) > 0) {
-        continue;
-      }
-      if (nowMs - runtime.lastUsedAt < idleTtlMs) {
-        continue;
-      }
-      // Acquisition runs outside the runtime lease. Keep its current
-      // transport until the chain records the refreshed runtime.
-      if (store.runtimeWorkChains.has(runtimeKey)) {
-        continue;
-      }
+  const isRuntimeIdle = (runtimeKey: string, runtime: SessionMcpRuntime): boolean =>
+    (runtime.activeLeases ?? 0) === 0 &&
+    !store.runtimeWorkChains.has(runtimeKey) &&
+    !listLiveAgentRunIds().some((runId) => {
+      const run = getAgentRunContext(runId);
+      return (
+        hasAgentRunContextExecutionOwner(runId) &&
+        (run?.sessionId === runtime.sessionId ||
+          (!run?.sessionId &&
+            runtime.sessionKey !== undefined &&
+            run?.sessionKey === runtime.sessionKey))
+      );
+    });
+
+  const retireIdleRuntimes = async (
+    expired: Array<{ runtimeKey: string; runtime: SessionMcpRuntime }>,
+  ): Promise<void> => {
+    for (const { runtimeKey } of expired) {
       store.runtimesBySessionId.delete(runtimeKey);
       store.connectionMetaByRuntimeKey.delete(runtimeKey);
-      expired.push({ runtimeKey, runtime });
     }
     const touchedSessionIds = new Set(expired.map(({ runtime }) => runtime.sessionId));
     for (const sessionId of touchedSessionIds) {
@@ -323,6 +353,19 @@ export function createSessionMcpRuntimeManagerLifecycle(
       ),
     );
     ensureIdleSweepTimer();
+  };
+
+  const sweepIdleRuntimes = async (): Promise<number> => {
+    const nowMs = store.scheduler.now();
+    const expired = [...store.runtimesBySessionId].flatMap(([runtimeKey, runtime]) => {
+      const idleTtlMs = store.runtimeSlots.get(runtime)?.idleTtlMs ?? 0;
+      return idleTtlMs > 0 &&
+        nowMs - runtime.lastUsedAt >= idleTtlMs &&
+        isRuntimeIdle(runtimeKey, runtime)
+        ? [{ runtimeKey, runtime }]
+        : [];
+    });
+    await retireIdleRuntimes(expired);
     return expired.length;
   };
 

@@ -186,7 +186,7 @@ export function createCombinedSessionMcpRuntime(params: {
     mcpAppsEnabled: parts.some((part) => part.mcpAppsEnabled === true),
     createdAt: Math.min(Date.now(), ...parts.map((part) => part.createdAt)),
     get lastUsedAt() {
-      return lastUsedAt;
+      return Math.max(lastUsedAt, ...parts.map((part) => part.lastUsedAt));
     },
     get activeLeases() {
       return Math.max(

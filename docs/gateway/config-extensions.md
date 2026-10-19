@@ -105,7 +105,7 @@ requires [`uv`/`uvx`](https://docs.astral.sh/uv/getting-started/installation/).
   lifetime and retires its runtimes at run end; retained transcripts alone do
   not keep them alive.
 - `mcp.sessionIdleTtlMs`: optional idle eviction in milliseconds. Unset or `0`
-  keeps the session lifetime above. Positive finite values opt into eviction;
+  keeps the session lifetime above unless capacity eviction is needed. Positive finite values opt into TTL eviction;
   fractions round down. For example, `mcp: { sessionIdleTtlMs: 3600000 }` evicts
   after one hour without use. While enabled, a sweep runs once per minute and
   preserves active leases and pending acquisitions. This override does not
@@ -114,8 +114,10 @@ requires [`uv`/`uvx`](https://docs.astral.sh/uv/getting-started/installation/).
   intended value from your config backup; the deleted value cannot be inferred.
 - Each Gateway admits at most 256 OpenClaw-managed MCP runtimes with server connections across sessions
   and requester partitions, including creation and cleanup in progress. At the
-  limit, existing runtimes stay alive and new admissions fail with a log message
-  directing you to stop or reset unused sessions. A runtime can own multiple
+  limit, the least-recently-used idle runtime is retired and its servers stop;
+  that session reconnects on its next turn. Active runs, leases, app views, and
+  pending acquisitions are preserved. If every runtime is in use, the turn
+  continues without MCP tools, with a bounded warning once per capacity episode. A runtime can own multiple
   configured server connections. Sessions without available MCP servers and
   sign-in-only catalogs do not consume this limit. Native client runtimes manage their own bounds.
 - MCP config changes retire only changed or removed server connections. Unchanged

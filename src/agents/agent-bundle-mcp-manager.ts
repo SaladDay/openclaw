@@ -1,4 +1,9 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { emitAgentEvent } from "../infra/agent-events.js";
+import {
+  hasAgentRunContextExecutionOwner,
+  listAgentRunsForSession,
+} from "../infra/agent-run-registry.js";
 import type { BundleMcpServerConfig } from "../plugins/bundle-mcp.types.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { createLazyImportLoader } from "../shared/lazy-promise.js";
@@ -12,6 +17,7 @@ import {
 import { loadSessionMcpConfig } from "./agent-bundle-mcp-runtime-config.js";
 import { sessionMcpRuntimeOwners } from "./agent-bundle-mcp-runtime-owner.js";
 import {
+  SessionMcpRuntimeCapacityError,
   resolveSessionMcpRuntimeIdleTtlMs,
   type CreateSessionMcpRuntime,
 } from "./agent-bundle-mcp-runtime-shared.js";
@@ -66,6 +72,7 @@ export function createSessionMcpRuntimeManager(opts: SessionMcpRuntimeManagerOpt
   const acquireCurrent = <T extends SessionMcpRuntimeLease | undefined>(
     scope: "full" | "requester",
     acquire: (params: PreparedAcquisitionParams) => Promise<T>,
+    withoutMcp: (params: RuntimeAcquisitionParams, error: SessionMcpRuntimeCapacityError) => T,
   ) =>
     async function current(params: RuntimeAcquisitionParams): Promise<T> {
       const senderId = normalizeOptionalString(params.requesterSenderId);
@@ -104,6 +111,9 @@ export function createSessionMcpRuntimeManager(opts: SessionMcpRuntimeManagerOpt
       } catch (error) {
         acquired?.releaseLease();
         acquired = undefined;
+        if (error instanceof SessionMcpRuntimeCapacityError) {
+          return withoutMcp(params, error);
+        }
         throw error;
       } finally {
         // Retirement may wait for this queue; complete it only after leaving it.
@@ -112,6 +122,45 @@ export function createSessionMcpRuntimeManager(opts: SessionMcpRuntimeManagerOpt
         }
       }
     };
+  const withoutMcp = (
+    params: RuntimeAcquisitionParams,
+    error: SessionMcpRuntimeCapacityError,
+  ): SessionMcpRuntimeLease => {
+    if (error.notify && params.sessionKey) {
+      for (const run of listAgentRunsForSession({
+        sessionKey: params.sessionKey,
+        sessionId: params.sessionId,
+      })) {
+        if (!hasAgentRunContextExecutionOwner(run.runId)) {
+          continue;
+        }
+        emitAgentEvent({
+          ...run,
+          sessionKey: params.sessionKey,
+          stream: "notice",
+          data: { phase: "warning", message: error.message },
+        });
+      }
+    }
+    const runtime = createCombinedSessionMcpRuntime({ ...params, parts: [] });
+    const catalog = {
+      version: 1,
+      generatedAt: 0,
+      servers: {},
+      tools: [],
+      diagnostics: [
+        {
+          serverName: "Gateway",
+          safeServerName: "gateway",
+          launchSummary: "MCP runtime capacity",
+          message: error.message,
+        },
+      ],
+    };
+    runtime.getCatalog = async () => catalog;
+    runtime.peekCatalog = () => catalog;
+    return leaseRuntime(runtime, params.sessionId);
+  };
   const prepareAcquisition = (
     params: PreparedAcquisitionParams,
     configReloadAtAdmission: SessionMcpConfigPublication | undefined,
@@ -180,109 +229,117 @@ export function createSessionMcpRuntimeManager(opts: SessionMcpRuntimeManagerOpt
   };
 
   const manager: SessionMcpRuntimeManager = {
-    acquire: acquireCurrent("full", async (params) => {
-      const configReloadAtAdmission = store.configReload;
-      if (params.sessionKey) {
-        store.sessionIdBySessionKey.set(params.sessionKey, params.sessionId);
-      }
+    acquire: acquireCurrent(
+      "full",
+      async (params) => {
+        const configReloadAtAdmission = store.configReload;
+        if (params.sessionKey) {
+          store.sessionIdBySessionKey.set(params.sessionKey, params.sessionId);
+        }
 
-      const {
-        staticServers,
-        requesterScopedServerNames,
-        safeServerNamesByServer,
-        requester,
-        acquireRequester,
-      } = prepareAcquisition(params, configReloadAtAdmission);
+        const {
+          staticServers,
+          requesterScopedServerNames,
+          safeServerNamesByServer,
+          requester,
+          acquireRequester,
+        } = prepareAcquisition(params, configReloadAtAdmission);
 
-      const leases: SessionMcpRuntimeLease[] = [];
-      try {
-        const staticLease = leaseRuntime(
-          await install.getOrCreateRuntimeEntry({
-            ...params,
-            runtimeKey: params.sessionId,
-            configReloadAtAdmission,
-            excludeServerNames: new Set(requesterScopedServerNames),
-            safeServerNamesByServer,
-          }),
+        const leases: SessionMcpRuntimeLease[] = [];
+        try {
+          const staticLease = leaseRuntime(
+            await install.getOrCreateRuntimeEntry({
+              ...params,
+              runtimeKey: params.sessionId,
+              configReloadAtAdmission,
+              excludeServerNames: new Set(requesterScopedServerNames),
+              safeServerNamesByServer,
+            }),
+            params.sessionId,
+          );
+          leases.push(staticLease);
+          if (requesterScopedServerNames.length === 0) {
+            return staticLease;
+          }
+          const parts = Object.keys(staticServers).length > 0 ? [staticLease.runtime] : [];
+          const requesterLease = requester ? await acquireRequester() : undefined;
+          if (requesterLease) {
+            leases.push(requesterLease);
+            parts.push(requesterLease.runtime);
+          }
+          return {
+            runtime:
+              parts.length === 0
+                ? staticLease.runtime
+                : createCombinedSessionMcpRuntime({
+                    sessionId: params.sessionId,
+                    sessionKey: params.sessionKey,
+                    workspaceDir: params.workspaceDir,
+                    agentDir: params.agentDir,
+                    parts,
+                  }),
+            releaseLease: () => leases.forEach((lease) => lease.releaseLease()),
+            async retireUnusedServers(retainedServerNames) {
+              const outcomes = await Promise.allSettled(
+                leases.map(async (lease) => await lease.retireUnusedServers?.(retainedServerNames)),
+              );
+              const failed = outcomes.find((outcome) => outcome.status === "rejected");
+              if (failed) {
+                throw failed.reason;
+              }
+            },
+          };
+        } catch (error) {
+          leases.forEach((lease) => lease.releaseLease());
+          throw error;
+        }
+      },
+      withoutMcp,
+    ),
+    acquireRequesterScoped: acquireCurrent(
+      "requester",
+      async (params) => {
+        const configReloadAtAdmission = store.configReload;
+        // Anonymous turns own no requester runtime; reconcile first so a cached
+        // catalog cannot survive a senderless harness turn.
+        const {
+          fullConfig,
+          requesterScopedServerNames,
+          safeServerNamesByServer,
+          requester,
+          acquireRequester,
+        } = prepareAcquisition(params, configReloadAtAdmission);
+        // Native acquisition can project only static servers. Requester discovery
+        // owns its advertised catalog; lease release/reload own server retirement.
+        const advertisedCatalogConfigFingerprint = loadSessionMcpConfig({
+          ...params,
+          loaded: fullConfig.loaded,
+          logDiagnostics: false,
+          redactConnectionServerNames: new Set(requesterScopedServerNames),
+          safeServerNamesByServer,
+        }).fingerprint;
+        lifecycle.reconcileAdvertisedScopedCatalogConfig(
           params.sessionId,
+          advertisedCatalogConfigFingerprint,
+          requester !== undefined && requesterScopedServerNames.length > 0,
         );
-        leases.push(staticLease);
+        if (!requester) {
+          return undefined;
+        }
+        if (params.sessionKey) {
+          store.sessionIdBySessionKey.set(params.sessionKey, params.sessionId);
+        }
         if (requesterScopedServerNames.length === 0) {
-          return staticLease;
+          return undefined;
         }
-        const parts = Object.keys(staticServers).length > 0 ? [staticLease.runtime] : [];
-        const requesterLease = requester ? await acquireRequester() : undefined;
-        if (requesterLease) {
-          leases.push(requesterLease);
-          parts.push(requesterLease.runtime);
+        const lease = await acquireRequester();
+        if (!lease) {
+          return undefined;
         }
-        return {
-          runtime:
-            parts.length === 0
-              ? staticLease.runtime
-              : createCombinedSessionMcpRuntime({
-                  sessionId: params.sessionId,
-                  sessionKey: params.sessionKey,
-                  workspaceDir: params.workspaceDir,
-                  agentDir: params.agentDir,
-                  parts,
-                }),
-          releaseLease: () => leases.forEach((lease) => lease.releaseLease()),
-          async retireUnusedServers(retainedServerNames) {
-            const outcomes = await Promise.allSettled(
-              leases.map(async (lease) => await lease.retireUnusedServers?.(retainedServerNames)),
-            );
-            const failed = outcomes.find((outcome) => outcome.status === "rejected");
-            if (failed) {
-              throw failed.reason;
-            }
-          },
-        };
-      } catch (error) {
-        leases.forEach((lease) => lease.releaseLease());
-        throw error;
-      }
-    }),
-    acquireRequesterScoped: acquireCurrent("requester", async (params) => {
-      const configReloadAtAdmission = store.configReload;
-      // Anonymous turns own no requester runtime; reconcile first so a cached
-      // catalog cannot survive a senderless harness turn.
-      const {
-        fullConfig,
-        requesterScopedServerNames,
-        safeServerNamesByServer,
-        requester,
-        acquireRequester,
-      } = prepareAcquisition(params, configReloadAtAdmission);
-      // Native acquisition can project only static servers. Requester discovery
-      // owns its advertised catalog; lease release/reload own server retirement.
-      const advertisedCatalogConfigFingerprint = loadSessionMcpConfig({
-        ...params,
-        loaded: fullConfig.loaded,
-        logDiagnostics: false,
-        redactConnectionServerNames: new Set(requesterScopedServerNames),
-        safeServerNamesByServer,
-      }).fingerprint;
-      lifecycle.reconcileAdvertisedScopedCatalogConfig(
-        params.sessionId,
-        advertisedCatalogConfigFingerprint,
-        requester !== undefined && requesterScopedServerNames.length > 0,
-      );
-      if (!requester) {
-        return undefined;
-      }
-      if (params.sessionKey) {
-        store.sessionIdBySessionKey.set(params.sessionKey, params.sessionId);
-      }
-      if (requesterScopedServerNames.length === 0) {
-        return undefined;
-      }
-      const lease = await acquireRequester();
-      if (!lease) {
-        return undefined;
-      }
-      return { ...lease, advertisedCatalogConfigFingerprint };
-    }),
+        return { ...lease, advertisedCatalogConfigFingerprint };
+      },
+      (params, error) => ({ ...withoutMcp(params, error), advertisedCatalogConfigFingerprint: "" }),
+    ),
     rememberAdvertisedScopedCatalog: lifecycle.rememberAdvertisedScopedCatalog,
     getAdvertisedScopedCatalog: lifecycle.getAdvertisedScopedCatalog,
     resolveSessionId(sessionKey) {

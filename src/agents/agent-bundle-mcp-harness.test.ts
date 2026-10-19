@@ -484,6 +484,18 @@ describe("materializeRequesterScopedMcpToolsForHarnessRunCore", () => {
     expect(live.content[0]).toMatchObject({ type: "text", text: "live:inbox:authed" });
     await authed!.dispose();
 
+    const unavailable = makeRuntime({ sessionId: "session-stable", requesterSenderId: "busy" });
+    const emptyCatalog = { version: 1, generatedAt: 0, servers: {}, tools: [] };
+    unavailable.getCatalog = async () => emptyCatalog;
+    unavailable.peekCatalog = () => emptyCatalog;
+    mocks.acquireRequesterScopedMcpRuntime.mockResolvedValueOnce({
+      runtime: unavailable,
+      releaseLease: unavailable.acquireLease!(),
+      advertisedCatalogConfigFingerprint: "",
+    });
+    expect(await fullPermissionTools("session-stable", "busy")).toBeUndefined();
+    expect(unavailable.activeLeases).toBe(0);
+
     const guest = await fullPermissionTools("session-stable", "guest");
     expect(guest!.advertisedTools.map((tool) => tool.name)).toEqual(advertisedNames);
     expect(guest!.tools.map((tool) => tool.name)).toEqual(advertisedNames);

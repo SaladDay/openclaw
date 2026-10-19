@@ -106,7 +106,7 @@ export function createSessionMcpRuntimeManagerInstall(
       existing.markUsed();
       return existing;
     }
-    const slot = lifecycle.reserveRuntimeSlot(existing, hasServers);
+    const slot = await lifecycle.reserveRuntimeSlot(existing, hasServers);
     store.connectionMetaByRuntimeKey.delete(runtimeKey);
     let runtime: SessionMcpRuntime | undefined;
     let previousCleanup: Promise<void> | undefined;
