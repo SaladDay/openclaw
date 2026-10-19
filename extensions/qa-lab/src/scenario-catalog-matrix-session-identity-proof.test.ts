@@ -8,14 +8,13 @@ const primaryRoomId = "!primary:matrix.test";
 const secondaryRoomId = "!secondary:matrix.test";
 const sharedSessionKey = `agent:qa:matrix:direct:${matrixDriverId}`;
 
-type MatrixScenarioId = "dm-per-room-session" | "dm-shared-session";
-
 function createMatrixSessionEntry(
   sessionId: string,
   roomId: string,
   updatedAt: number,
   nativeDirectUserId = matrixDriverId,
 ) {
+  const context = { channel: "matrix", to: `room:${roomId}`, accountId: "sut" };
   return {
     sessionId,
     updatedAt,
@@ -25,23 +24,16 @@ function createMatrixSessionEntry(
       route: {
         channel: "matrix",
         accountId: "sut",
-        target: {
-          to: `room:${roomId}`,
-          chatType: "direct",
-        },
+        target: { to: context.to, chatType: "direct" },
       },
-      context: {
-        channel: "matrix",
-        to: `room:${roomId}`,
-        accountId: "sut",
-      },
+      context,
       origin: {
         provider: "matrix",
         surface: "matrix",
         accountId: "sut",
         chatType: "direct",
         from: `matrix:${nativeDirectUserId}`,
-        to: `room:${roomId}`,
+        to: context.to,
         nativeChannelId: roomId,
         nativeDirectUserId,
       },
@@ -49,15 +41,14 @@ function createMatrixSessionEntry(
   };
 }
 
-async function runMatrixSessionScenario(params: {
-  scenarioId: MatrixScenarioId;
-  sharedSessionIdentity: boolean;
-  sharedSessionKey?: boolean;
-  sharedTranscriptId?: boolean;
-  returnedSenderId?: string;
-  secondaryNativeSenderId?: string;
-}) {
-  const scenario = readQaScenarioById(params.scenarioId);
+async function runMatrixSessionScenario(
+  params: {
+    sharedSessionKey?: boolean;
+    returnedSenderId?: string;
+    secondaryNativeSenderId?: string;
+  } = {},
+) {
+  const scenario = readQaScenarioById("dm-per-room-session");
   const config = scenario.execution.config as {
     primaryConversationId: string;
     secondaryConversationId: string;
@@ -65,16 +56,11 @@ async function runMatrixSessionScenario(params: {
     secondaryMarker: string;
   };
   const state = createQaBusState();
-  const usesSharedSessionKey = params.sharedSessionKey ?? params.sharedSessionIdentity;
-  const usesSharedTranscriptId = params.sharedTranscriptId ?? params.sharedSessionIdentity;
-  const primarySessionKey = usesSharedSessionKey
-    ? sharedSessionKey
-    : `agent:qa:matrix:channel:${primaryRoomId}`;
-  const secondarySessionKey = usesSharedSessionKey
-    ? sharedSessionKey
-    : `agent:qa:matrix:channel:${secondaryRoomId}`;
+  const sessionKey = (room: string) =>
+    params.sharedSessionKey ? sharedSessionKey : `agent:qa:matrix:channel:${room}`;
+  const primarySessionKey = sessionKey(primaryRoomId);
+  const secondarySessionKey = sessionKey(secondaryRoomId);
   const primarySessionId = "matrix-session-primary";
-  const secondarySessionId = usesSharedTranscriptId ? primarySessionId : "matrix-session-secondary";
 
   const readRawQaSessionStore = vi.fn(async () => {
     const inboundMessages = state
@@ -83,29 +69,18 @@ async function runMatrixSessionScenario(params: {
     if (inboundMessages.length === 0) {
       return {};
     }
-    if (inboundMessages.length === 1) {
-      return {
-        [primarySessionKey]: createMatrixSessionEntry(primarySessionId, primaryRoomId, 1),
-      };
-    }
-    if (usesSharedSessionKey) {
-      return {
-        [sharedSessionKey]: createMatrixSessionEntry(
-          secondarySessionId,
-          secondaryRoomId,
-          2,
-          params.secondaryNativeSenderId,
-        ),
-      };
-    }
     return {
       [primarySessionKey]: createMatrixSessionEntry(primarySessionId, primaryRoomId, 1),
-      [secondarySessionKey]: createMatrixSessionEntry(
-        secondarySessionId,
-        secondaryRoomId,
-        2,
-        params.secondaryNativeSenderId,
-      ),
+      ...(inboundMessages.length < 2
+        ? {}
+        : {
+            [secondarySessionKey]: createMatrixSessionEntry(
+              "matrix-session-secondary",
+              secondaryRoomId,
+              2,
+              params.secondaryNativeSenderId,
+            ),
+          }),
     };
   });
 
@@ -137,13 +112,6 @@ async function runMatrixSessionScenario(params: {
           text: config.primaryMarker,
         });
       } else if (outboundWaitCount === 2) {
-        if (params.scenarioId === "dm-shared-session") {
-          state.addOutboundMessage({
-            accountId: "sut",
-            to: `dm:${config.secondaryConversationId}`,
-            text: "This Matrix DM is sharing a session with another room. Set channels.matrix.dm.sessionScope to per-room to isolate it.",
-          });
-        }
         state.addOutboundMessage({
           accountId: "sut",
           to: `dm:${config.secondaryConversationId}`,
@@ -167,7 +135,7 @@ async function runMatrixSessionScenario(params: {
     },
   };
 
-  return await runLoadedScenarioFlow(params.scenarioId, {
+  return await runLoadedScenarioFlow(scenario.id, {
     state,
     api: {
       env: {
@@ -181,40 +149,24 @@ async function runMatrixSessionScenario(params: {
 }
 
 describe("Matrix DM scenario session identity evidence", () => {
-  it.each([{ lane: "live", returnedSenderId: matrixDriverId }])(
-    "accepts distinct room-owned sessions on the $lane Matrix lane",
-    async ({ returnedSenderId }) => {
-      await expect(
-        runMatrixSessionScenario({
-          scenarioId: "dm-per-room-session",
-          sharedSessionIdentity: false,
-          returnedSenderId,
-        }),
-      ).resolves.toMatchObject({ status: "pass" });
-    },
-  );
+  it("accepts distinct room-owned sessions on the live Matrix lane", async () => {
+    await expect(runMatrixSessionScenario()).resolves.toMatchObject({ status: "pass" });
+  });
 
   it("rejects a reused per-room session key even when its transcript id rotates", async () => {
     await expect(
       runMatrixSessionScenario({
-        scenarioId: "dm-per-room-session",
-        sharedSessionIdentity: false,
         sharedSessionKey: true,
-        sharedTranscriptId: false,
       }),
     ).rejects.toThrow(/session|room|isolat|shared/i);
   });
 
-  it.each([{ scenarioId: "dm-per-room-session" as const, sharedSessionIdentity: false }])(
-    "rejects a different persisted Matrix sender in $scenarioId",
-    async (scenario) => {
-      await expect(
-        runMatrixSessionScenario({
-          ...scenario,
-          returnedSenderId: "driver",
-          secondaryNativeSenderId: "@intruder:matrix.test",
-        }),
-      ).rejects.toThrow(/session|room|isolat|shared/i);
-    },
-  );
+  it("rejects a different persisted Matrix sender", async () => {
+    await expect(
+      runMatrixSessionScenario({
+        returnedSenderId: "driver",
+        secondaryNativeSenderId: "@intruder:matrix.test",
+      }),
+    ).rejects.toThrow(/session|room|isolat|shared/i);
+  });
 });

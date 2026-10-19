@@ -20,16 +20,30 @@ const currentEvent = {
   data: currentObservation,
 };
 
-async function runPromptEvidence(
-  params: {
-    events?: unknown[];
-  } = {},
-) {
+function instructionScenario() {
   const scenario = readQaScenarioById(scenarioId);
   const actions = scenario.execution.flow?.steps[0]?.actions;
   if (!actions) {
     throw new Error("instruction profile scenario has no actions");
   }
+  return { actions, config: scenario.execution.config ?? {} };
+}
+
+function runEvidence(actions: unknown[], api: Record<string, unknown>, detailsExpr?: string) {
+  const flow: QaScenarioFlow = {
+    steps: [
+      {
+        name: "instruction profile evidence",
+        actions: [{ set: "sessionKey", value: sessionKey }, ...actions],
+        detailsExpr,
+      },
+    ],
+  };
+  return runLoadedScenarioFlow(scenarioId, { flow, api });
+}
+
+async function runPromptEvidence(params: { events?: unknown[] } = {}) {
+  const { actions, config } = instructionScenario();
   const exportIndex = actions.findIndex(
     (action) =>
       typeof action === "object" &&
@@ -48,25 +62,17 @@ async function runPromptEvidence(
   if (exportIndex < 0 || assertionIndex < 0) {
     throw new Error("instruction profile scenario has no provider prompt evidence assertion");
   }
-  const instructionContents = scenario.execution.config?.instructionContents;
+  const instructionContents = config.instructionContents;
   if (typeof instructionContents !== "string") {
     throw new Error("instruction profile scenario has no instruction contents");
   }
-  const flow: QaScenarioFlow = {
-    steps: [
-      {
-        name: "acquires bounded current-run prompt evidence",
-        actions: [
-          { set: "sessionKey", value: sessionKey },
-          { set: "turn", value: { started: { runId: "current-run" } } },
-          ...actions.slice(exportIndex, assertionIndex + 1),
-        ],
-      },
+  const chars = instructionContents.trimEnd().length;
+  return await runEvidence(
+    [
+      { set: "turn", value: { started: { runId: "current-run" } } },
+      ...actions.slice(exportIndex, assertionIndex + 1),
     ],
-  };
-  return await runLoadedScenarioFlow(scenarioId, {
-    flow,
-    api: {
+    {
       path,
       env: {
         gateway: {
@@ -89,8 +95,8 @@ async function runPromptEvidence(
                         path: "/qa/AGENTS.md",
                         missing: false,
                         truncated: false,
-                        rawChars: instructionContents.trimEnd().length,
-                        injectedChars: instructionContents.trimEnd().length,
+                        rawChars: chars,
+                        injectedChars: chars,
                       },
                     ],
                   },
@@ -119,15 +125,11 @@ async function runPromptEvidence(
         rm: async () => undefined,
       },
     },
-  });
+  );
 }
 
 async function runNestedToolHistoryEvidence(params: { leakContextMarker?: boolean } = {}) {
-  const scenario = readQaScenarioById(scenarioId);
-  const actions = scenario.execution.flow?.steps[0]?.actions;
-  if (!actions) {
-    throw new Error("instruction profile scenario has no actions");
-  }
+  const { actions, config } = instructionScenario();
   const historyEvidenceAction = actions.find(
     (action) =>
       typeof action === "object" &&
@@ -140,7 +142,6 @@ async function runNestedToolHistoryEvidence(params: { leakContextMarker?: boolea
   if (!historyEvidenceAction) {
     throw new Error("instruction profile scenario has no history evidence wait");
   }
-  const config = scenario.execution.config ?? {};
   const { artifactFile, contextMarker, finalReply, inputFile, nonce } = config;
   if (
     typeof artifactFile !== "string" ||
@@ -167,19 +168,9 @@ async function runNestedToolHistoryEvidence(params: { leakContextMarker?: boolea
     }),
     { role: "assistant", content: [{ type: "text", text: finalReply }] },
   ];
-  const flow: QaScenarioFlow = {
-    steps: [
-      {
-        name: "recognizes nested read and write history evidence",
-        actions: [{ set: "sessionKey", value: sessionKey }, historyEvidenceAction],
-        detailsExpr:
-          "JSON.stringify({ terminalReplies: historyEvidence.visibleAssistant.length, finalText: historyEvidence.final.text })",
-      },
-    ],
-  };
-  return await runLoadedScenarioFlow(scenarioId, {
-    flow,
-    api: {
+  return await runEvidence(
+    [historyEvidenceAction],
+    {
       path,
       env: {
         providerMode: "live-frontier",
@@ -193,7 +184,8 @@ async function runNestedToolHistoryEvidence(params: { leakContextMarker?: boolea
         },
       },
     },
-  });
+    "JSON.stringify({ terminalReplies: historyEvidence.visibleAssistant.length, finalText: historyEvidence.final.text })",
+  );
 }
 
 describe("instruction profile prompt evidence", () => {

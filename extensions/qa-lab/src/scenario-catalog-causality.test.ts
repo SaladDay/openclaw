@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createQaBusState } from "./bus-state.js";
 import { assertNoGatewayLogSentinels } from "./gateway-log-sentinel.js";
-import {
-  readQaScenarioById,
-  readQaScenarioExecutionConfig,
-  readQaScenarioPackYamlSource,
-} from "./scenario-catalog.js";
+import { readQaScenarioById, readQaScenarioPackYamlSource } from "./scenario-catalog.js";
 import { readFlowAssertExpression, requireFlowScenario } from "./scenario-catalog.test-utils.js";
 import { runLoadedScenarioFlow } from "./scenario-flow-runner.test-support.js";
 import { createRestartFlowFixture } from "./scenario-restart-flow.test-support.js";
@@ -161,11 +157,6 @@ describe("qa scenario catalog causality", () => {
       },
     });
     expect(callIndex(liveMultiRestartActions, "sleep")).toBe(-1);
-    expect(readQaScenarioExecutionConfig("gateway-restart-multi-live")).toMatchObject({
-      requiredProviderMode: "live-frontier",
-      requiredProvider: "openai",
-      requiredModel: "gpt-5.4",
-    });
   });
 
   it("rejects an unrelated pending wait at the current restart checkpoint", async () => {

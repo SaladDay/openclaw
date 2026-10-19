@@ -9,19 +9,35 @@ import {
   transcriptToolResult,
   writeQaSessionTranscript,
 } from "../test/runtime-tool-fixture-helpers.js";
-import { getQaNativeWorkspaceBehavior } from "./native-workspace-behavior.js";
+import {
+  getQaNativeWorkspaceBehavior,
+  type QaNativeWorkspaceBehavior,
+} from "./native-workspace-behavior.js";
 import { runRuntimeToolFixture } from "./runtime-tool-fixture.js";
 import { readQaScenarioFile } from "./scenario-catalog.js";
 import { createSession } from "./suite-runtime-agent-session.js";
 
-const OPENCLAW_TOOL_BY_BEHAVIOR = {
-  bash: "exec",
-  edit: "edit",
-  exec: "exec",
-  "fs-read": "read",
-  "fs-write": "write",
-  grep: "exec",
-} as const;
+function nativeArguments(behavior: QaNativeWorkspaceBehavior, phase: "happy" | "failure") {
+  const args = phase === "happy" ? behavior.happyArgs : behavior.failureArgs;
+  const target = phase === "happy" ? behavior.happyMutation : behavior.failureSentinel;
+  return behavior.nativeToolName === "bash"
+    ? { command: `/bin/zsh -lc ${JSON.stringify(args.cmd)}` }
+    : { changes: [{ path: target?.path, kind: { type: "update" } }] };
+}
+
+function nativeReceipt(behavior: QaNativeWorkspaceBehavior, phase: "happy" | "failure") {
+  return [
+    transcriptToolCall(behavior.nativeToolName, phase, nativeArguments(behavior, phase)),
+    transcriptToolResult(
+      behavior.nativeToolName,
+      phase,
+      phase === "happy"
+        ? (behavior.happyOutputMarker ?? "native workspace change completed")
+        : (behavior.failureOutputMarker ?? "path escapes workspace root"),
+      phase === "failure" ? true : undefined,
+    ),
+  ];
+}
 
 afterEach(() => {
   resetPluginStateStoreForTests({ closeDatabase: false });
@@ -35,35 +51,13 @@ describe("Codex-native workspace runtime tool fixtures", () => {
       const env = await makeEnv();
       env.gateway.runtimeEnv.OPENCLAW_QA_FORCE_RUNTIME = "codex";
       const behavior = getQaNativeWorkspaceBehavior(behaviorId);
-      const happyArguments =
-        behavior.nativeToolName === "bash"
-          ? { command: `/bin/zsh -lc ${JSON.stringify(behavior.happyArgs.cmd)}` }
-          : {
-              changes: [
-                {
-                  path: behavior.happyMutation?.path,
-                  kind: { type: "update" },
-                },
-              ],
-            };
-      const failureArguments =
-        behavior.nativeToolName === "bash"
-          ? { command: `/bin/zsh -lc ${JSON.stringify(behavior.failureArgs.cmd)}` }
-          : {
-              changes: [
-                {
-                  path: behavior.failureSentinel?.path,
-                  kind: { type: "update" },
-                },
-              ],
-            };
-      const runtimeToolName = OPENCLAW_TOOL_BY_BEHAVIOR[behaviorId];
+      const runtimeToolName = behaviorId === "edit" ? "edit" : "write";
+      const readWorkspaceFile = (file: string) =>
+        fs.readFile(path.resolve(env.gateway.workspaceDir, file), "utf8");
+      const writeWorkspaceFile = (file: { path: string; contents: string }) =>
+        fs.writeFile(path.resolve(env.gateway.workspaceDir, file.path), file.contents, "utf8");
       if (behaviorId === "fs-write" && behavior.happyMutation) {
-        await fs.writeFile(
-          path.join(env.gateway.workspaceDir, behavior.happyMutation.path),
-          behavior.happyMutation.contents,
-          "utf8",
-        );
+        await writeWorkspaceFile(behavior.happyMutation);
       }
 
       let generatedSessionIndex = 0;
@@ -74,7 +68,7 @@ describe("Codex-native workspace runtime tool fixtures", () => {
       const details = await runRuntimeToolFixture(
         env,
         {
-          toolName: OPENCLAW_TOOL_BY_BEHAVIOR[behaviorId],
+          toolName: runtimeToolName,
           nativeWorkspaceBehavior: behaviorId,
           toolCoverage: {
             bucket: "codex-native-workspace",
@@ -96,33 +90,19 @@ describe("Codex-native workspace runtime tool fixtures", () => {
               requireSuccessfulTranscriptToolResult: params.requireSuccessfulTranscriptToolResult,
             });
             const phase = params.sessionKey.endsWith(":happy") ? "happy" : "failure";
-            const transcriptArguments = phase === "happy" ? happyArguments : failureArguments;
-            await writeQaSessionTranscript(env, params.sessionKey, [
-              transcriptToolCall(behavior.nativeToolName, phase, transcriptArguments),
-              transcriptToolResult(
-                behavior.nativeToolName,
-                phase,
-                phase === "happy"
-                  ? (behavior.happyOutputMarker ?? "native workspace change completed")
-                  : (behavior.failureOutputMarker ?? "path escapes workspace root"),
-                phase === "failure" ? true : undefined,
-              ),
-            ]);
+            await writeQaSessionTranscript(env, params.sessionKey, nativeReceipt(behavior, phase));
             if (behaviorId === "fs-write" && phase === "failure") {
               const sentinel = behavior.failureSentinel;
               if (!sentinel) {
                 throw new Error("fs-write failure must use an outside-workspace sentinel");
               }
-              await expect(
-                fs.readFile(path.resolve(env.gateway.workspaceDir, sentinel.path), "utf8"),
-              ).resolves.toBe(sentinel.contents);
+              await expect(readWorkspaceFile(sentinel.path)).resolves.toBe(sentinel.contents);
             }
             if (phase === "happy" && behavior.happyMutation) {
-              const mutationPath = path.join(env.gateway.workspaceDir, behavior.happyMutation.path);
               if (behaviorId === "fs-write") {
-                await expect(fs.readFile(mutationPath, "utf8")).rejects.toThrow();
+                await expect(readWorkspaceFile(behavior.happyMutation.path)).rejects.toThrow();
               }
-              await fs.writeFile(mutationPath, behavior.happyMutation.contents, "utf8");
+              await writeWorkspaceFile(behavior.happyMutation);
             }
             return {};
           }),
@@ -143,17 +123,12 @@ describe("Codex-native workspace runtime tool fixtures", () => {
       ]);
       expect(details).toContain(`codex-native ${behaviorId} behavior passed`);
       if (behavior.happyMutation) {
-        await expect(
-          fs.readFile(path.join(env.gateway.workspaceDir, behavior.happyMutation.path), "utf8"),
-        ).resolves.toBe(behavior.happyMutation.contents);
+        await expect(readWorkspaceFile(behavior.happyMutation.path)).resolves.toBe(
+          behavior.happyMutation.contents,
+        );
       }
       if (behavior.failureSentinel) {
-        await expect(
-          fs.readFile(
-            path.resolve(env.gateway.workspaceDir, behavior.failureSentinel.path),
-            "utf8",
-          ),
-        ).rejects.toThrow();
+        await expect(readWorkspaceFile(behavior.failureSentinel.path)).rejects.toThrow();
       }
     },
   );
@@ -192,20 +167,7 @@ describe("Codex-native workspace runtime tool fixtures", () => {
         }
         const behavior = getQaNativeWorkspaceBehavior(behaviorId);
         const phase = params.sessionKey.endsWith(":happy") ? "happy" : "failure";
-        const args = phase === "happy" ? behavior.happyArgs : behavior.failureArgs;
-        await writeQaSessionTranscript(env, params.sessionKey, [
-          transcriptToolCall(behavior.nativeToolName, phase, {
-            command: `/bin/zsh -lc ${JSON.stringify(args.cmd)}`,
-          }),
-          transcriptToolResult(
-            behavior.nativeToolName,
-            phase,
-            phase === "happy"
-              ? (behavior.happyOutputMarker ?? "native workspace command completed")
-              : (behavior.failureOutputMarker ?? "path escapes workspace root"),
-            phase === "failure" ? true : undefined,
-          ),
-        ]);
+        await writeQaSessionTranscript(env, params.sessionKey, nativeReceipt(behavior, phase));
         return {};
       },
     );

@@ -22,21 +22,27 @@ function runIdentityFlow(fault: Fault = "none") {
   let turn = 0;
   let marker = "";
   let restarted = false;
-  const contexts = new Map<
-    string,
-    {
-      runId: string;
-      contextId: string;
-      executionId: string;
-      ingress: { state: string; kind: string; boundary: string };
-      invoker: { state: string };
-      coverageState: string;
-      agentPrincipal: { kind: string; principalRef: string };
-      agentDefinition: { definitionRef: string };
-      trustDomain: { state: string; domainRef: string };
-      runtimeInstance: { state: string; kind: string; runtimeRef: string };
-    }
-  >();
+  const makeContext = (runId: string) => ({
+    runId,
+    contextId: fault === "reused-context" ? "context-1" : `context-${turn}`,
+    executionId: `execution-${turn}`,
+    ingress: {
+      state: "present",
+      kind: "gateway-client",
+      boundary: "gateway.ws.authenticated-connect",
+    },
+    invoker: { state: "absent" },
+    coverageState: "unattributed",
+    agentPrincipal: { kind: "agent", principalRef: "qa" },
+    agentDefinition: { definitionRef: "qa" },
+    trustDomain: { state: "present", domainRef: pseudonym("b") },
+    runtimeInstance: {
+      state: "present",
+      kind: "embedded",
+      runtimeRef: fault === "raw-runtime" ? "private-runtime" : pseudonym("c"),
+    },
+  });
+  const contexts = new Map<string, ReturnType<typeof makeContext>>();
   const call = vi.fn(async (method: string, params: Record<string, string>) => {
     if (method === "agent") {
       turn += 1;
@@ -45,32 +51,7 @@ function runIdentityFlow(fault: Fault = "none") {
       }
       marker = params.message.replace("Reply exactly: ", "");
       const runId = `run-${turn}`;
-      contexts.set(runId, {
-        runId,
-        contextId: fault === "reused-context" ? "context-1" : `context-${turn}`,
-        executionId: `execution-${turn}`,
-        ingress: {
-          state: "present",
-          kind: "gateway-client",
-          boundary: "gateway.ws.authenticated-connect",
-        },
-        invoker: { state: "absent" },
-        coverageState: "unattributed",
-        agentPrincipal: { kind: "agent", principalRef: "qa" },
-        agentDefinition: { definitionRef: "qa" },
-        trustDomain: {
-          state: "present",
-          domainRef: `hmac-sha256:v1:${"a".repeat(32)}:${"b".repeat(64)}`,
-        },
-        runtimeInstance: {
-          state: "present",
-          kind: "embedded",
-          runtimeRef:
-            fault === "raw-runtime"
-              ? "private-runtime"
-              : `hmac-sha256:v1:${"a".repeat(32)}:${"c".repeat(64)}`,
-        },
-      });
+      contexts.set(runId, makeContext(runId));
       return { status: "accepted", runId };
     }
     if (method === "chat.history") {
@@ -214,3 +195,7 @@ describe("live-frontier execution identity qualification", () => {
     await expect(runIdentityFlow(fault).result).rejects.toThrow(message);
   });
 });
+
+function pseudonym(digit: string) {
+  return `hmac-sha256:v1:${"a".repeat(32)}:${digit.repeat(64)}`;
+}
