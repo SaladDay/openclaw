@@ -388,15 +388,11 @@ export async function materializeRequesterScopedMcpToolsForHarnessRunCore(
       }
     }
 
-    // Capacity-only admission has no publication fingerprint. Keep this turn
-    // empty without invalidating the stable catalog shared by other requesters.
     const advertisedCatalog =
-      scopedRuntimeHandle?.advertisedCatalogConfigFingerprint === ""
-        ? liveCatalog
-        : (getAdvertisedScopedMcpCatalog(params.sessionId) ??
-          (liveCatalog
-            ? mergeMcpConnectCatalog(liveCatalog, scopedRuntime?.requesterConnect)
-            : undefined));
+      getAdvertisedScopedMcpCatalog(params.sessionId) ??
+      (liveCatalog
+        ? mergeMcpConnectCatalog(liveCatalog, scopedRuntime?.requesterConnect)
+        : undefined);
     if (!advertisedCatalog || advertisedCatalog.tools.length === 0) {
       await liveRuntime?.dispose();
       return undefined;

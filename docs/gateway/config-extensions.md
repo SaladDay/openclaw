@@ -117,7 +117,9 @@ requires [`uv`/`uvx`](https://docs.astral.sh/uv/getting-started/installation/).
   limit, the least-recently-used idle runtime is retired and its servers stop;
   that session reconnects on its next turn. Active runs, leases, app views, and
   pending acquisitions are preserved. If every runtime is in use, the turn
-  continues without MCP tools, with a bounded warning once per capacity episode. A runtime can own multiple
+  continues without MCP access, with a bounded warning once per capacity episode. Previously advertised
+  requester tool schemas stay stable; their unavailable bindings return an error without contacting MCP.
+  A runtime can own multiple
   configured server connections. Sessions without available MCP servers and
   sign-in-only catalogs do not consume this limit. Native client runtimes manage their own bounds.
 - MCP config changes retire only changed or removed server connections. Unchanged
