@@ -124,9 +124,10 @@ export function reconcileWhamBlock(
 
 export type AuthProfileFailureReduction = {
   expectedProfile: AuthProfileCredential;
+  observedAt: number;
   reason: AuthProfileFailureReason;
   modelId?: string;
-  whamResult: (WhamCooldownProbeResult & { startedAt: number }) | null;
+  whamResult: WhamCooldownProbeResult | null;
   probeEligible: boolean;
 };
 
@@ -154,15 +155,15 @@ export function reduceAuthProfileFailure(
   const currentWhamResult =
     whamResult &&
     input.probeEligible &&
-    // A slow usage response cannot replace newer success or failure evidence.
-    Math.max(previousStats?.lastProbeAt ?? 0, previousStats?.lastFailureAt ?? 0) <=
-      whamResult.startedAt &&
     profile.type === "oauth" &&
     isFutureDateTimestampMs(profile.expires, { nowMs: now }) &&
     isSameWhamCredential(expectedProfile, profile)
       ? whamResult
       : null;
-  // Ordinary failure bookkeeping still applies when the optional quota probe is stale.
+  // Successful use also advances lastProbeAt, including inherited profiles.
+  if (currentWhamResult && (previousStats?.lastProbeAt ?? 0) > input.observedAt) {
+    return undefined;
+  }
   if (reason === "no_error_details" && !currentWhamResult) {
     return undefined;
   }

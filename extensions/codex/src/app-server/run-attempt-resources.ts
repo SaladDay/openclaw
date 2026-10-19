@@ -249,16 +249,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
           : {}),
         binding: thread,
       });
-      const assertParentSessionCurrent = async () => {
-        // Rejoin publications started during awaited monitor work. Keep the original
-        // reader as the effect guard so this preparation cannot replace its source.
-        const prepared = await bindingStore.prepareRead(bindingIdentity);
-        if (!prepared) {
-          throw new Error("Codex native subagent binding reader is unavailable");
-        }
-        prepared.release();
-        await parent?.assertCurrent();
-      };
+      const assertParentSessionCurrent = async () => parent?.assertCurrent();
       const parentWriteAuthority = createNativeSubagentSessionAuthority(parent);
       const submissionStore: CodexNativeSubagentSubmissionStore | undefined =
         historyOwner && thread.lifecycle.preserveExistingBinding !== true

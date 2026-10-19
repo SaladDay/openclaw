@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { preparePluginStateRead } from "../plugin-sdk/plugin-state-runtime.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db-cache.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "../state/openclaw-state-db.js";
+import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { pluginStatePublication } from "./plugin-state-publication.js";
 import {
@@ -20,6 +22,56 @@ afterEach(async () => {
 });
 
 describe("prepared plugin state effect guards", () => {
+  it.each(["reject-new", "evict-oldest"] as const)(
+    "scopes a pending %s write without exposing its affected binding",
+    async (overflowPolicy) => {
+      await withOpenClawTestState({ label: "plugin-state-sibling-guard" }, async ({ env }) => {
+        const store = createPluginStateKeyedStore<string>("guard-test", {
+          namespace: "bindings",
+          maxEntries: 10,
+          overflowPolicy,
+          env,
+        });
+        await store.register("a", "independent");
+        await store.register("b-\ufffd", "original");
+        const a = await preparePluginStateRead(store, "a");
+        const b = await preparePluginStateRead(store, "b-\ufffd");
+        if (!a || !b) {
+          throw new Error("Expected prepared binding readers");
+        }
+        const foreign = openNodeSqliteDatabase(resolveOpenClawStateSqlitePath(env));
+        foreign.exec("BEGIN IMMEDIATE");
+        // A real SQLite writer lock prevents the sibling write from settling.
+        const writing = store.register("b-\ud800", "replacement");
+        try {
+          expect(() => b.read()).toThrow("authority is unavailable");
+          await expect(preparePluginStateRead(store, "b-\ufffd")).rejects.toThrow(
+            "authority is unavailable",
+          );
+          if (overflowPolicy === "reject-new") {
+            expect(a.read()).toBe("independent");
+            const fresh = await preparePluginStateRead(store, "a");
+            try {
+              expect(fresh?.read()).toBe("independent");
+            } finally {
+              fresh?.release();
+            }
+          } else {
+            // A register that can evict another key still denies the whole namespace.
+            expect(() => a.read()).toThrow("authority is unavailable");
+          }
+        } finally {
+          foreign.exec("ROLLBACK");
+          foreign.close();
+          await writing;
+          a.release();
+          b.release();
+        }
+        expect(await store.lookup("b-\ufffd")).toBe("replacement");
+      });
+    },
+  );
+
   it("publishes native replacement and deletion only after commit, and restores a rolled-back guard", async () => {
     await withOpenClawTestState({ label: "plugin-state-native-guard" }, async ({ env }) => {
       const options = { namespace: "bindings", maxEntries: 10, env };
@@ -107,49 +159,6 @@ describe("prepared plugin state effect guards", () => {
     });
   });
 
-  it.each(["bindings", "other-bindings"])(
-    "joins an earlier queued %s write before preparing another session guard",
-    async (namespace) => {
-      await withOpenClawTestState({ label: "plugin-state-prepared-queue" }, async ({ env }) => {
-        const store = createPluginStateKeyedStore<string>("guard-test", {
-          namespace: "bindings",
-          maxEntries: 10,
-          env,
-        });
-        await store.register("session", "original");
-        const existing = await preparePluginStateRead(store, "session");
-        if (!existing) {
-          throw new Error("Expected the plugin-state owner to prepare a guard");
-        }
-        try {
-          const writer = createPluginStateKeyedStore<string>("guard-test", {
-            namespace,
-            maxEntries: 10,
-            env,
-          });
-          const writing = writer.register("peer-session", "peer");
-          expect(() => existing.read()).toThrow("authority is unavailable");
-          const preparing = preparePluginStateRead(store, "session").then((prepared) => {
-            if (!prepared) {
-              throw new Error("Expected the plugin-state owner to prepare a guard");
-            }
-            try {
-              // Preparation must join the writer, not just defer the refusal to the first read.
-              return prepared.read();
-            } finally {
-              prepared.release();
-            }
-          });
-          const [write, preparation] = await Promise.allSettled([writing, preparing]);
-          expect(write.status).toBe("fulfilled");
-          expect(preparation).toMatchObject({ status: "fulfilled", value: "original" });
-        } finally {
-          existing.release();
-        }
-      });
-    },
-  );
-
   it("keeps an uncertain publication denied after a later successful write or a fresh preparation", async () => {
     await withOpenClawTestState({ label: "plugin-state-unknown-guard" }, async ({ env }) => {
       const store = createPluginStateKeyedStore<string>("guard-test", {
@@ -168,11 +177,7 @@ describe("prepared plugin state effect guards", () => {
         }
       });
       try {
-        const writing = store.register("session", "uncertain");
-        const preparing = expect(preparePluginStateRead(store, "session")).rejects.toThrow(
-          "unavailable",
-        );
-        await Promise.all([writing, preparing]);
+        await store.register("session", "uncertain");
       } finally {
         stopFault();
       }

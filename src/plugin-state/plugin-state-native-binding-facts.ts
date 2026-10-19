@@ -3,7 +3,6 @@ import { parseStoredJson } from "./plugin-state-error.js";
 import { readCommittedPluginStateObservationCache } from "./plugin-state-observation-cache.js";
 import {
   assertPluginStatePublicationSettled,
-  capturePluginStatePublicationSettlement,
   pluginStatePublication,
   pluginStatePublicationKey,
 } from "./plugin-state-publication.js";
@@ -78,12 +77,7 @@ export async function capturePluginStateNativeBindingFacts(
   };
   try {
     if (authority) {
-      // The effect guard covers the whole database, not just this entry's namespace.
-      const settled = capturePluginStatePublicationSettlement(identity());
-      if (settled) {
-        await settled;
-      }
-      assertPluginStatePublicationSettled(identity());
+      assertPluginStatePublicationSettled(identity(), scope);
     }
     const cached = readCommittedPluginStateObservationCache(identity(), scope);
     if (cached) {
@@ -98,7 +92,7 @@ export async function capturePluginStateNativeBindingFacts(
           throw new Error("Native binding committed state is unavailable");
         }
         if (authority) {
-          assertPluginStatePublicationSettled(identity());
+          assertPluginStatePublicationSettled(identity(), scope);
           store.assertCurrent?.();
         }
         (context.assertPublicationCurrent ?? context.admission.assertCurrent)();

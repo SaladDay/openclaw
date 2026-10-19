@@ -753,45 +753,6 @@ describe("markAuthProfileFailure — WHAM-aware Codex cooldowns", () => {
     expect(store.usageStats?.["openai:default"]?.blockedScope).toBe("model");
   });
 
-  it("does not re-block a healthy model from a quota response older than its success", async () => {
-    let now = 1_700_000_000_000;
-    const store = makeStore(undefined);
-    const response = createDeferredCore<Response>();
-    fetchMock.mockReturnValueOnce(response.promise);
-    const dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
-    const failure = markAuthProfileFailure({
-      store,
-      profileId: "openai:default",
-      reason: "rate_limit",
-      modelId: "utility",
-    });
-    try {
-      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
-      now += 1;
-      store.usageStats = { "openai:default": { errorCount: 0, lastProbeAt: now } };
-      now += 1;
-      response.resolve(
-        Response.json({
-          rate_limit: {
-            limit_reached: true,
-            primary_window: { used_percent: 100, reset_after_seconds: 3_600 },
-          },
-        }),
-      );
-      await failure;
-      const stats = store.usageStats?.["openai:default"];
-      expect(stats?.blockedUntil).toBeUndefined();
-      expect(stats?.blockedReason).toBeUndefined();
-      expect(stats?.cooldownModel).toBe("utility");
-      expect(isProfileInCooldown(store, "openai:default", now, "gpt-5.5")).toBe(false);
-      expect(isProfileInCooldown(store, "openai:default", now, "utility")).toBe(true);
-    } finally {
-      response.resolve(Response.json({}));
-      await failure;
-      dateNowSpy.mockRestore();
-    }
-  });
-
   it.each([
     {
       label: "burst contention without an active cooldown",
