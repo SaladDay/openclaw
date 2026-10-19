@@ -89,3 +89,12 @@ export function resolveReplyRunForCurrentSessionId(sessionId: string): ReplyRunI
   );
   return { kind: "ambiguous", operations: matches.map((entry) => entry.active!) };
 }
+
+export function listReplyRunsForCurrentSessionId(sessionId: string): ReplyOperation[] {
+  const resolution = resolveReplyRunForCurrentSessionId(sessionId);
+  return resolution.kind === "none"
+    ? []
+    : resolution.kind === "one"
+      ? [resolution.operation]
+      : resolution.operations;
+}

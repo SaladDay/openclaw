@@ -22,6 +22,7 @@ import {
   XIAOMI_DEFAULT_MODEL_REF,
   XIAOMI_TOKEN_PLAN_DEFAULT_MODEL_REF,
 } from "./onboard.js";
+import manifest from "./openclaw.plugin.json" with { type: "json" };
 import {
   buildXiaomiProvider,
   buildXiaomiTokenPlanProvider,
@@ -42,13 +43,11 @@ const XIAOMI_WIZARD_GROUP = {
   groupLabel: "Xiaomi",
   groupHint: "Pay-as-you-go / Token Plan",
 };
-const MIMO_REASONING_MODEL_IDS = new Set([
-  "mimo-v2.5",
-  "mimo-v2.5-pro",
-  "mimo-v2.6-flash",
-  "mimo-v2.6-pro",
-  "mimo-v2.6-pro-ultraspeed",
-]);
+const MIMO_REASONING_MODEL_IDS = new Set(
+  manifest.modelCatalog.providers.xiaomi.models
+    .filter((model) => model.reasoning)
+    .map((model) => model.id.toLowerCase()),
+);
 
 const MIMO_THINKING_PROFILE = {
   levels: (["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const).map((id) => ({

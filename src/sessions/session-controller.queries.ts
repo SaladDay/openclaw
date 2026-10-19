@@ -1,6 +1,7 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import { ReplyRunAlreadyActiveError, type ReplyOperation } from "./session-controller.contracts.js";
+import { listReplyRunsForCurrentSessionId } from "./session-controller.identity.js";
 import {
   activeSessionOperations,
   hasOperationBackendRunId,
@@ -24,14 +25,7 @@ export function resolveSessionRunProgressState(
   sessionId: string,
   owner?: { agentId?: string; defaultAgentId?: string },
 ): "queued" | "running" | undefined {
-  const resolution = resolveReplyRunForCurrentSessionId(sessionId);
-  const operations =
-    resolution.kind === "none"
-      ? []
-      : resolution.kind === "one"
-        ? [resolution.operation]
-        : resolution.operations;
-  const eligible = operations.filter((operation) => {
+  const eligible = listReplyRunsForCurrentSessionId(sessionId).filter((operation) => {
     if (operation.result) {
       return false;
     }
@@ -64,14 +58,9 @@ export function resolveSessionRunProgressState(
   return "running";
 }
 export function isSessionRunCompactionBlocked(sessionId: string): boolean {
-  const resolution = resolveReplyRunForCurrentSessionId(sessionId);
-  const operations =
-    resolution.kind === "none"
-      ? []
-      : resolution.kind === "one"
-        ? [resolution.operation]
-        : resolution.operations;
-  return operations.some((operation) => !isReplyOperationPreBackendPhase(operation.phase));
+  return listReplyRunsForCurrentSessionId(sessionId).some(
+    (operation) => !isReplyOperationPreBackendPhase(operation.phase),
+  );
 }
 export function getActiveSessionRunCount(): number {
   return [...activeSessionOperations()].length;
@@ -105,14 +94,7 @@ export function resolveActiveSessionRunThreadId(sessionKey: string): string | nu
 }
 
 export function isReplyRunEvidenceStaleBySessionId(sessionId: string): boolean {
-  const resolution = resolveReplyRunForCurrentSessionId(sessionId);
-  const operations =
-    resolution.kind === "none"
-      ? []
-      : resolution.kind === "one"
-        ? [resolution.operation]
-        : resolution.operations;
-  return operations.some(isReplyRunEvidenceStale);
+  return listReplyRunsForCurrentSessionId(sessionId).some(isReplyRunEvidenceStale);
 }
 
 export function listActiveReplyRunSessionKeys(): string[] {
