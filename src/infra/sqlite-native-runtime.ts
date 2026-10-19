@@ -27,10 +27,8 @@ function assertSqliteWalResetSafeVersion(version: string, nodeVersion: string): 
   if (isSqliteWalResetSafeVersion(version)) {
     return;
   }
-  const variables = (process.config as { variables?: Record<string, unknown> } | undefined)
-    ?.variables;
-  const isShared =
-    variables?.node_shared_sqlite === true || variables?.node_shared_sqlite === "true";
+  const variables: Record<string, unknown> = process.config.variables;
+  const isShared = variables.node_shared_sqlite === true || variables.node_shared_sqlite === "true";
   const wording = isShared ? "uses shared system" : "embeds";
   const remediation = isShared
     ? "Upgrade the system SQLite library to one of those safe versions, or use a Node build embedding a safe version."
@@ -189,6 +187,7 @@ export function requireNodeSqlite(): typeof import("node:sqlite") {
   installProcessWarningFilter();
   try {
     ensureSqliteLibrarySelected();
+    // SAFETY: This fixed builtin exposes node:sqlite; the probe below validates runtime support.
     const sqlite = require("node:sqlite") as typeof import("node:sqlite");
     assertSafeSqliteRuntime(sqlite);
     return sqlite;

@@ -1933,6 +1933,7 @@ src/state/openclaw-database-preflight.ts
 src/state/openclaw-database-seal-schema.ts
 src/state/openclaw-quarantine-error.ts
 src/state/openclaw-quarantine-store.ts
+src/state/openclaw-schema-versions.ts
 src/state/openclaw-state-db-additive-columns.ts
 src/state/openclaw-state-db-admission.ts
 src/state/openclaw-state-db-async-lifecycle.ts

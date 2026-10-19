@@ -27,14 +27,11 @@ vi.mock("../infra/sqlite-native-runtime.js", async (importOriginal) => {
     }),
   };
 });
-vi.mock("./openclaw-agent-db-contract.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./openclaw-agent-db-contract.js")>()),
+vi.mock("./openclaw-schema-versions.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./openclaw-schema-versions.js")>()),
   get OPENCLAW_AGENT_SCHEMA_VERSION() {
     return inputs.agentVersion;
   },
-}));
-vi.mock("./openclaw-state-db-contract.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./openclaw-state-db-contract.js")>()),
   get OPENCLAW_STATE_SCHEMA_VERSION() {
     return inputs.stateVersion;
   },
