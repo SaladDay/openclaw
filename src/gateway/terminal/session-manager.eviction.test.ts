@@ -35,15 +35,11 @@ function trackingManager(maxSessions: number, spawn = async () => makeFakePty())
 describe("TerminalSessionManager idle eviction", () => {
   it("never evicts viewer-attached or connection-owned sessions under pressure", async () => {
     const { manager, ptys, open } = trackingManager(2);
-    const connOwned = await manager.open(baseOpenRequest());
-    const viewed = await open();
-    if (!connOwned.ok || !viewed.ok) {
-      throw new Error("expected opens");
-    }
+    expectTerminalOpen(await manager.open(baseOpenRequest()));
+    const viewed = expectTerminalOpen(await open());
     expect(manager.attach("viewer-1", viewed.sessionId)?.sessionId).toBe(viewed.sessionId);
 
-    const denied = await open();
-    expect(denied).toMatchObject({ ok: false, code: "limit" });
+    await expect(open()).resolves.toMatchObject({ ok: false, code: "limit" });
     expect(manager.size).toBe(2);
     expect(ptys.some((pty) => pty.killed)).toBe(false);
   });
@@ -67,9 +63,7 @@ describe("TerminalSessionManager idle eviction", () => {
     expect(manager.attach("viewer-1", victim.sessionId)?.sessionId).toBe(victim.sessionId);
     gate.resolve();
 
-    const outcome = await opening;
-    expect(outcome).toMatchObject({ ok: false, code: "limit" });
-    // The now-viewered session survives; the orphaned replacement is killed.
+    await expect(opening).resolves.toMatchObject({ ok: false, code: "limit" });
     expect(victimPty.killed).toBe(false);
     expect(replacementPty.killed).toBe(true);
     expect(manager.size).toBe(1);
@@ -98,8 +92,7 @@ describe("TerminalSessionManager idle eviction", () => {
     expectDefined(ptys[0], "oldest pty invariant").emitData("busy\n");
     gate.resolve();
 
-    const outcome = await opening;
-    expect(outcome.ok).toBe(true);
+    expectTerminalOpen(await opening);
     expect(manager.size).toBe(2);
     expect(expectDefined(ptys[0], "oldest pty invariant").killed).toBe(false);
     expect(expectDefined(ptys[1], "newer pty invariant").killed).toBe(true);
@@ -107,17 +100,17 @@ describe("TerminalSessionManager idle eviction", () => {
 
   it("holds the cap when concurrent opens complete out of order", async () => {
     const gates: Array<(pty: FakeTerminalPty) => void> = [];
-    const { manager, open } = trackingManager(2, async () => {
-      const pty = await new Promise<FakeTerminalPty>((resolve) => {
-        gates.push(resolve);
-      });
-      return pty;
-    });
+    const { manager, open } = trackingManager(
+      2,
+      () =>
+        new Promise<FakeTerminalPty>((resolve) => {
+          gates.push(resolve);
+        }),
+    );
     const seeded = open();
     await vi.waitFor(() => expect(gates).toHaveLength(1));
     gates[0]?.(makeFakePty());
-    const seededOutcome = await seeded;
-    expect(seededOutcome.ok).toBe(true);
+    expectTerminalOpen(await seeded);
 
     // A reserves the free slot; B sees the reservation and an idle eviction
     // candidate. B's spawn completes first.
@@ -133,9 +126,7 @@ describe("TerminalSessionManager idle eviction", () => {
     gates[1]?.(makeFakePty());
     const outcomeA = await openA;
 
-    expect(outcomeA.ok).toBe(true);
-    expect(outcomeB.ok).toBe(true);
-    // The hard cap survives the out-of-order completion.
+    expect([outcomeA.ok, outcomeB.ok]).toEqual([true, true]);
     expect(manager.size).toBeLessThanOrEqual(2);
   });
 
@@ -155,9 +146,7 @@ describe("TerminalSessionManager idle eviction", () => {
     await vi.waitFor(() => expect(hangNextSpawn).toBe(false));
     controller.abort(new Error("cancelled"));
 
-    // Cancellation releases capacity, so a later open can evict the victim.
-    const next = await open();
-    expect(next.ok).toBe(true);
+    expectTerminalOpen(await open());
     expect(manager.size).toBe(1);
     // The hung open stays pending forever by design; do not await it.
     void hung;
@@ -175,17 +164,14 @@ describe("TerminalSessionManager idle eviction", () => {
     const victim = expectTerminalOpen(await open());
 
     failNextSpawn = true;
-    const failed = await open();
-    expect(failed).toMatchObject({ ok: false, code: "spawn_failed" });
-    // The victim survives a failed replacement and remains eligible for eviction.
+    await expect(open()).resolves.toMatchObject({ ok: false, code: "spawn_failed" });
     expect(manager.size).toBe(1);
     expect(pty.killed).toBe(false);
     pty.emitData("still-alive\n");
     expect(manager.snapshotAgent(agentOwner, victim.sessionId)).toContain("still-alive");
 
     failNextSpawn = false;
-    const replacement = await open();
-    expect(replacement.ok).toBe(true);
+    expectTerminalOpen(await open());
     expect(manager.size).toBe(1);
     expect(pty.killed).toBe(true);
   });

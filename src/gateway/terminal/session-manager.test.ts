@@ -10,20 +10,35 @@ import {
   type FakeTerminalPty,
   makeFakePty,
 } from "./session-manager.test-helpers.js";
-afterEach(() => vi.useRealTimers());
+const managers: TerminalSessionManager[] = [];
+afterEach(() => {
+  for (const manager of managers.splice(0)) {
+    manager.disposeAll();
+  }
+  vi.useRealTimers();
+});
 
 const TERMINAL_EVENT_DATA = "terminal.data";
 const TERMINAL_EVENT_EXIT = "terminal.exit";
 const OPERATOR_INTRO = composeTerminalIntroBanner();
 
 function fixture(options: Partial<ConstructorParameters<typeof TerminalSessionManager>[0]> = {}) {
-  const emit = vi.fn();
+  const { emit: observe, ...settings } = options;
+  const emit = vi.fn(observe);
   const fake = makeFakePty();
-  const manager = new TerminalSessionManager({ emit, spawn: async () => fake, ...options });
+  const manager = new TerminalSessionManager({ emit, spawn: async () => fake, ...settings });
+  managers.push(manager);
   return { emit, fake, manager };
 }
+function heldPty() {
+  const fake = makeFakePty();
+  const gate = createDeferred<FakeTerminalPty>();
+  return { fake, spawn: () => gate.promise, release: () => gate.resolve(fake) };
+}
+const start = (manager: TerminalSessionManager, request?: Parameters<typeof baseRequest>[0]) =>
+  manager.open(baseRequest(request));
 async function open(manager: TerminalSessionManager, request?: Parameters<typeof baseRequest>[0]) {
-  return expectTerminalOpen(await manager.open(baseRequest(request)));
+  return expectTerminalOpen(await start(manager, request));
 }
 
 async function openSlowViewers() {
@@ -32,80 +47,57 @@ async function openSlowViewers() {
     ["viewer-healthy", 0],
   ]);
   const setup = fixture({ getBufferedAmount: (connId) => bufferedAmounts.get(connId) });
-  try {
-    const { sessionId } = await open(setup.manager, {
-      owner: agentTerminalOwner("agent:main:main"),
-    });
-    setup.manager.attach("viewer-slow", sessionId);
-    setup.manager.attach("viewer-healthy", sessionId);
-    setup.fake.emitData("pressure");
-    await vi.advanceTimersByTimeAsync(4);
-    expect(setup.fake.paused).toBe(true);
-    return { ...setup, sessionId };
-  } catch (error) {
-    setup.manager.disposeAll();
-    throw error;
-  }
+  const { sessionId } = await open(setup.manager, { owner: agentTerminalOwner("agent:main:main") });
+  setup.manager.attach("viewer-slow", sessionId);
+  setup.manager.attach("viewer-healthy", sessionId);
+  setup.fake.emitData("pressure");
+  await vi.advanceTimersByTimeAsync(4);
+  expect(setup.fake.paused).toBe(true);
+  return { ...setup, sessionId };
 }
 
 describe("TerminalSessionManager", () => {
-  it("finalizes a session when backend resize throws", async () => {
-    const emit = vi.fn();
-    const kill = vi.fn(() => manager.size);
-    const backend: TerminalBackend = {
-      write: vi.fn(),
-      resize: () => {
-        throw new Error("dead PTY");
-      },
-      pause: vi.fn(),
-      resume: vi.fn(),
-      kill,
-      onData: vi.fn(),
-      onExit: vi.fn(),
-    };
-    const manager = new TerminalSessionManager({ emit });
-    const opened = await open(manager, { createBackend: async () => backend });
-
-    expect(manager.resize("conn-1", opened.sessionId, 120, 40)).toBe(false);
-    expect(manager.size).toBe(0);
-    expect(kill).toHaveBeenCalledOnce();
-    expect(kill).toHaveReturnedWith(1);
-    expect(emit).toHaveBeenCalledWith("conn-1", TERMINAL_EVENT_EXIT, {
-      sessionId: opened.sessionId,
-      exitCode: null,
-      signal: null,
-      reason: "error",
-      error: "resize failed",
-    });
-  });
-
-  it("delivers relay backend errors to the owning connection", async () => {
-    let onExit: Parameters<TerminalBackend["onExit"]>[0] | undefined;
-    const backend: TerminalBackend = {
-      write: vi.fn(),
-      resize: vi.fn(),
-      pause: vi.fn(),
-      resume: vi.fn(),
-      kill: vi.fn(),
-      onData: vi.fn(),
-      onExit: (callback) => {
-        onExit = callback;
-      },
-    };
-    const emit = vi.fn();
-    const manager = new TerminalSessionManager({ emit });
-    const opened = await open(manager, { createBackend: async () => backend });
-
-    onExit?.({ error: "ROUTE_CHANGED: node connection changed before dispatch" });
-
-    expect(emit).toHaveBeenCalledWith("conn-1", TERMINAL_EVENT_EXIT, {
-      sessionId: opened.sessionId,
-      exitCode: null,
-      signal: null,
-      reason: "error",
-      error: "ROUTE_CHANGED: node connection changed before dispatch",
-    });
-  });
+  it.each(["resize", "relay"] as const)(
+    "finalizes and reports a %s backend error",
+    async (source) => {
+      const { emit, manager } = fixture();
+      const kill = vi.fn(() => manager.size);
+      let onExit: Parameters<TerminalBackend["onExit"]>[0] | undefined;
+      const backend: TerminalBackend = {
+        write: vi.fn(),
+        pause: vi.fn(),
+        resume: vi.fn(),
+        onData: vi.fn(),
+        kill,
+        resize: () => {
+          throw new Error("dead PTY");
+        },
+        onExit: (callback) => {
+          onExit = callback;
+        },
+      };
+      const { sessionId } = await open(manager, { createBackend: async () => backend });
+      const error =
+        source === "resize"
+          ? "resize failed"
+          : "ROUTE_CHANGED: node connection changed before dispatch";
+      if (source === "resize") {
+        expect(manager.resize("conn-1", sessionId, 120, 40)).toBe(false);
+        expect(manager.size).toBe(0);
+        expect(kill).toHaveBeenCalledOnce();
+        expect(kill).toHaveReturnedWith(1);
+      } else {
+        onExit?.({ error });
+      }
+      expect(emit).toHaveBeenCalledWith("conn-1", TERMINAL_EVENT_EXIT, {
+        sessionId,
+        exitCode: null,
+        signal: null,
+        reason: "error",
+        error,
+      });
+    },
+  );
 
   it("coalesces thousands of PTY chunks into a bounded number of data frames", async () => {
     vi.useFakeTimers();
@@ -120,20 +112,16 @@ describe("TerminalSessionManager", () => {
     }
     await vi.advanceTimersByTimeAsync(4);
 
-    const frames = emit.mock.calls.filter(([, event]) => event === TERMINAL_EVENT_DATA);
+    const frames = emit.mock.calls
+      .filter(([, event]) => event === TERMINAL_EVENT_DATA)
+      .map((call) => call[2] as { seq: number; data: string });
     expect(frames.length).toBeLessThan(10);
-    expect(frames.map((call) => (call[2] as { seq: number }).seq)).toEqual([
+    expect(frames.map(({ seq }) => seq)).toEqual([
       OPERATOR_INTRO.length + 65_536,
       OPERATOR_INTRO.length + 80_000,
     ]);
-    expect(
-      frames.every(
-        (call) => Buffer.byteLength((call[2] as { data: string }).data, "utf8") <= 64 * 1024,
-      ),
-    ).toBe(true);
-    expect(frames.map((call) => (call[2] as { data: string }).data).join("")).toBe(
-      chunk.repeat(10_000),
-    );
+    expect(frames.every(({ data }) => Buffer.byteLength(data, "utf8") <= 64 * 1024)).toBe(true);
+    expect(frames.map(({ data }) => data).join("")).toBe(chunk.repeat(10_000));
   });
 
   it("flushes small output immediately after terminal input", async () => {
@@ -152,20 +140,31 @@ describe("TerminalSessionManager", () => {
     });
   });
 
-  it("stages uploads only through the owning session host", async () => {
-    const stageUpload = vi.fn(async () => ({ path: "/tmp/node/report.pdf", size: 4 }));
-    const { manager } = fixture();
-    const outcome = await open(manager, { stageUpload });
-    const file = { name: "report.pdf", contentBase64: "dGVzdA==" };
-
-    await expect(manager.upload("conn-2", outcome.sessionId, file)).resolves.toBeUndefined();
-    expect(stageUpload).not.toHaveBeenCalled();
-    await expect(manager.upload("conn-1", outcome.sessionId, file)).resolves.toEqual({
-      path: "/tmp/node/report.pdf",
-      size: 4,
-    });
-    expect(stageUpload).toHaveBeenCalledWith(file);
-  });
+  it.each(["connection", "viewer"] as const)(
+    "stages uploads only for an authorized %s",
+    async (kind) => {
+      const stageUpload = vi.fn(async () => ({ path: "/tmp/node/report.pdf", size: 4 }));
+      const { manager } = fixture();
+      const viewer = kind === "viewer";
+      const { sessionId } = await open(manager, {
+        stageUpload,
+        ...(viewer ? { owner: agentTerminalOwner("agent:main:main") } : {}),
+      });
+      const file = { name: "report.pdf", contentBase64: "dGVzdA==" };
+      await expect(manager.upload("stranger", sessionId, file)).resolves.toBeUndefined();
+      expect(stageUpload).not.toHaveBeenCalled();
+      if (viewer) {
+        expect(manager.attach("viewer-1", sessionId)?.sessionId).toBe(sessionId);
+      }
+      await expect(
+        manager.upload(viewer ? "viewer-1" : "conn-1", sessionId, file),
+      ).resolves.toEqual({
+        path: "/tmp/node/report.pdf",
+        size: 4,
+      });
+      expect(stageUpload).toHaveBeenCalledWith(file);
+    },
+  );
 
   it("emits an exit event and drops the session when the process exits", async () => {
     const { emit, fake, manager } = fixture();
@@ -183,30 +182,16 @@ describe("TerminalSessionManager", () => {
   });
 
   it("closes live and pending sessions when their agent becomes disallowed", async () => {
-    const emit = vi.fn();
-    const livePty = makeFakePty();
-    const pendingPty = makeFakePty();
-    const { promise: pendingGate, resolve: releasePending } = createDeferred();
-    const manager = new TerminalSessionManager({
-      emit,
-      spawn: async (request) => {
-        if (request.cwd === "/pending") {
-          await pendingGate;
-          return pendingPty;
-        }
-        return livePty;
-      },
-    });
+    const pending = heldPty();
+    const { emit, fake: livePty, manager } = fixture();
 
-    const live = await manager.open(baseRequest({ agentId: "locked" }));
+    const live = await start(manager, { agentId: "locked" });
     expect(live.ok).toBe(true);
-    const pending = manager.open(
-      baseRequest({
-        agentId: "locked",
-        owner: { kind: "conn", connId: "conn-2" },
-        cwd: "/pending",
-      }),
-    );
+    const opening = start(manager, {
+      agentId: "locked",
+      owner: { kind: "conn", connId: "conn-2" },
+      createBackend: pending.spawn,
+    });
 
     manager.closeDisallowedAgents((agentId) => agentId !== "locked");
     expect(livePty.killed).toBe(true);
@@ -217,62 +202,42 @@ describe("TerminalSessionManager", () => {
       expect.objectContaining({ reason: "closed" }),
     );
 
-    releasePending?.();
-    const pendingOutcome = await pending;
-    expect(pendingOutcome.ok).toBe(false);
-    expect(pendingPty.killed).toBe(true);
+    pending.release();
+    expect((await opening).ok).toBe(false);
+    expect(pending.fake.killed).toBe(true);
     expect(manager.size).toBe(0);
   });
 
   it.each([
-    {
-      label: "owns the terminal",
-      request: { owner: { kind: "conn" as const, connId: "conn-x" } },
-    },
-    {
-      label: "is the initial viewer",
-      request: {
+    ["owner", { owner: { kind: "conn" as const, connId: "conn-x" } }],
+    [
+      "initial viewer",
+      {
         owner: agentTerminalOwner("agent:main:ui-session", "ui-session-id"),
         viewerConnId: "conn-x",
       },
-    },
-  ])("kills a pending open when its connection $label and disconnects", async ({ request }) => {
-    const emit = vi.fn();
-    const fake = makeFakePty();
-    const { promise: gate, resolve: release } = createDeferred();
-    const manager = new TerminalSessionManager({
-      emit,
-      spawn: async () => {
-        await gate;
-        return fake;
-      },
-    });
-    const openPromise = manager.open(baseRequest(request));
-    // Connection drops while the shell is still spawning.
+    ],
+  ] as const)("kills pending opens on %s disconnect", async (_, request) => {
+    const { fake, spawn, release } = heldPty();
+    const { manager } = fixture({ spawn });
+    const openPromise = start(manager, request);
+
     manager.handleDisconnect("conn-x");
-    release?.();
+    release();
     const outcome = await openPromise;
     expect(outcome).toMatchObject({ ok: false, code: "closed" });
-    // The freshly spawned PTY is killed, not registered as an orphan.
+
     expect(fake.killed).toBe(true);
     expect(manager.size).toBe(0);
   });
 
   it("enforces the cap against concurrent opens racing on the async spawn", async () => {
-    // Spawn resolves on a later tick so both opens await it before either registers.
-    const { promise: gate, resolve: release } = createDeferred();
-    const manager = new TerminalSessionManager({
-      emit: vi.fn(),
-      spawn: async () => {
-        await gate;
-        return makeFakePty();
-      },
-      maxSessions: 1,
-    });
-    const both = Promise.all([manager.open(baseRequest()), manager.open(baseRequest())]);
-    release?.();
+    const { spawn, release } = heldPty();
+    const { manager } = fixture({ spawn, maxSessions: 1 });
+    const both = Promise.all([start(manager), start(manager)]);
+    release();
     const [a, b] = await both;
-    // Exactly one succeeds; the reserved slot blocks the concurrent open.
+
     expect([a.ok, b.ok].filter(Boolean)).toHaveLength(1);
     expect(manager.size).toBe(1);
   });
@@ -309,9 +274,8 @@ describe("TerminalSessionManager agent ownership", () => {
       }
       expect([manager.size, fake.killed]).toEqual([survives ? 1 : 0, !survives]);
       if (!survives && removal === "close") {
-        expect((await manager.open(baseRequest())).ok).toBe(true);
+        expect((await start(manager)).ok).toBe(true);
       }
-      manager.disposeAll();
     },
   );
 
@@ -338,34 +302,16 @@ describe("TerminalSessionManager agent ownership", () => {
     });
   });
 
-  it("lets a co-attached viewer upload into an agent-owned session", async () => {
-    const stageUpload = vi.fn(async () => ({ path: "/tmp/node/report.pdf", size: 4 }));
-    const { manager } = fixture();
-    const outcome = await open(manager, { owner: agentOwner, stageUpload });
-    const file = { name: "report.pdf", contentBase64: "dGVzdA==" };
-
-    // A connection that never attached as a viewer cannot upload.
-    await expect(manager.upload("stranger", outcome.sessionId, file)).resolves.toBeUndefined();
-    expect(stageUpload).not.toHaveBeenCalled();
-
-    expect(manager.attach("viewer-1", outcome.sessionId)?.sessionId).toBe(outcome.sessionId);
-    await expect(manager.upload("viewer-1", outcome.sessionId, file)).resolves.toEqual({
-      path: "/tmp/node/report.pdf",
-      size: 4,
-    });
-    expect(stageUpload).toHaveBeenCalledWith(file);
-  });
-
   it("co-attaches viewers without take-over and cleans each viewer independently", async () => {
     vi.useFakeTimers();
-    const emit = vi.fn((connId: string, event: string) => {
-      // A send can disconnect a viewer before the remaining recipients receive this frame.
-      if (connId === "viewer-1" && event === TERMINAL_EVENT_DATA) {
-        manager.handleDisconnect(connId);
-      }
+    const { emit, fake, manager } = fixture({
+      // Disconnect during fanout must not prevent delivery to the next viewer.
+      emit: (connId, event) => {
+        if (connId === "viewer-1" && event === TERMINAL_EVENT_DATA) {
+          manager.handleDisconnect(connId);
+        }
+      },
     });
-    const fake = makeFakePty();
-    const manager = new TerminalSessionManager({ emit, spawn: async () => fake });
     const outcome = await open(manager, { owner: agentOwner });
 
     expect(manager.attach("viewer-1", outcome.sessionId)).toBeDefined();
@@ -394,16 +340,11 @@ describe("TerminalSessionManager agent ownership", () => {
     );
     expect(emit).not.toHaveBeenCalledWith("viewer-1", TERMINAL_EVENT_DATA, expect.anything());
 
-    // Browser close removes the view; agent lifecycle ownership remains.
     expect(manager.close("viewer-2", outcome.sessionId)).toBe(true);
     expect(manager.size).toBe(1);
     expect(fake.killed).toBe(false);
-    expect(manager.list()).toEqual([
-      expect.objectContaining({
-        sessionId: outcome.sessionId,
-        attached: false,
-        owner: "agent:agent:main:main",
-      }),
+    expect(manager.list()).toMatchObject([
+      { sessionId: outcome.sessionId, attached: false, owner: "agent:agent:main:main" },
     ]);
     expect(manager.close("stranger", outcome.sessionId)).toBe(false);
     expect(manager.attach("viewer-2", outcome.sessionId)).toBeDefined();
@@ -412,18 +353,19 @@ describe("TerminalSessionManager agent ownership", () => {
     expect(fake.killed).toBe(true);
   });
 
-  it.each(["disconnect", "close"] as const)(
-    "immediately resumes a shared terminal when its slow viewer leaves via %s",
+  it.each(["disconnect slow", "close slow", "disconnect healthy"] as const)(
+    "reconciles shared-terminal backpressure after %s",
     async (removal) => {
       vi.useFakeTimers();
       const { fake, emit, manager, sessionId } = await openSlowViewers();
-      try {
-        if (removal === "disconnect") {
-          manager.handleDisconnect("viewer-slow");
-        } else {
-          expect(manager.close("viewer-slow", sessionId)).toBe(true);
-        }
-
+      if (removal === "close slow") {
+        expect(manager.close("viewer-slow", sessionId)).toBe(true);
+      } else {
+        manager.handleDisconnect(removal === "disconnect slow" ? "viewer-slow" : "viewer-healthy");
+      }
+      if (removal === "disconnect healthy") {
+        expect(fake).toMatchObject({ paused: true, resumeCalls: 0 });
+      } else {
         expect(fake.paused).toBe(false);
         emit.mockClear();
         fake.emitData("resumed");
@@ -438,26 +380,9 @@ describe("TerminalSessionManager agent ownership", () => {
           TERMINAL_EVENT_DATA,
           expect.anything(),
         );
-      } finally {
-        manager.disposeAll();
-        vi.useRealTimers();
       }
     },
   );
-
-  it("keeps a shared terminal paused when its remaining viewer is still slow", async () => {
-    vi.useFakeTimers();
-    const { fake, manager } = await openSlowViewers();
-    try {
-      manager.handleDisconnect("viewer-healthy");
-
-      expect(fake.paused).toBe(true);
-      expect(fake.resumeCalls).toBe(0);
-    } finally {
-      manager.disposeAll();
-      vi.useRealTimers();
-    }
-  });
 });
 
 describe("TerminalSessionManager agent session lifecycle", () => {
@@ -477,27 +402,24 @@ describe("TerminalSessionManager agent session lifecycle", () => {
         killFirst();
         current = false;
       };
-      const emit = vi.fn((_connId, event) => {
-        if (revocation === "output flush" && event === TERMINAL_EVENT_DATA) {
-          current = false;
-        }
-      });
-      const manager = new TerminalSessionManager({
-        emit,
+      const { emit, manager } = fixture({
+        emit: (_connId, event) => {
+          if (revocation === "output flush" && event === TERMINAL_EVENT_DATA) {
+            current = false;
+          }
+        },
         getBufferedAmount: revocation === "output flush" ? () => bufferedAmount : undefined,
         spawn: async () => makeFakePty(),
       });
       let drain: ReturnType<TerminalSessionManager["beginAgentSessionDrain"]> | undefined;
       let opening: ReturnType<TerminalSessionManager["open"]> | undefined;
       try {
-        const first = expectTerminalOpen(
-          await manager.open(
-            baseRequest({ owner, viewerConnId: "viewer", createBackend: async () => firstPty }),
-          ),
-        );
-        const second = expectTerminalOpen(
-          await manager.open(baseRequest({ owner, createBackend: async () => secondPty })),
-        );
+        const first = await open(manager, {
+          owner,
+          viewerConnId: "viewer",
+          createBackend: async () => firstPty,
+        });
+        const second = await open(manager, { owner, createBackend: async () => secondPty });
         const beginDrain = () =>
           manager.beginAgentSessionDrain(owner, () => {
             if (!current) {
@@ -508,30 +430,20 @@ describe("TerminalSessionManager agent session lifecycle", () => {
           expect(beginDrain).toThrow("deletion superseded");
           expect(firstPty.paused).toBe(true);
         } else {
-          opening = manager.open(
-            baseRequest({ owner, createBackend: () => pendingBackend.promise }),
-          );
+          opening = start(manager, { owner, createBackend: () => pendingBackend.promise });
           drain = beginDrain();
-          let settled = false;
-          const outcome = drain.drained.then(
-            () => {
-              settled = true;
-            },
-            (error: unknown) => {
-              settled = true;
-              return error;
-            },
-          );
+          const settled = vi.fn((error?: unknown) => error);
+          const outcome = drain.drained.then(() => settled(), settled);
           await Promise.resolve();
-          expect(settled).toBe(false);
+          expect(settled).not.toHaveBeenCalled();
           expect(drain.hasWork()).toBe(true);
           firstPty.emitExit(0);
           await Promise.resolve();
-          expect(settled).toBe(false);
+          expect(settled).not.toHaveBeenCalled();
           pendingBackend.resolve(pendingPty);
           await expect(opening).resolves.toMatchObject({ ok: false, code: "closed" });
           expect(pendingPty.killed).toBe(true);
-          expect(settled).toBe(false);
+          expect(settled).not.toHaveBeenCalled();
           pendingPty.emitExit(0);
           expect(await outcome).toEqual(new Error("deletion superseded"));
           expect(drain.hasWork()).toBe(false);
@@ -556,7 +468,7 @@ describe("TerminalSessionManager agent session lifecycle", () => {
             expect.objectContaining({ sessionId: survivor.sessionId, data: "still streaming" }),
           );
         }
-        await expect(manager.open(baseRequest({ owner }))).resolves.toMatchObject({ ok: true });
+        await expect(start(manager, { owner })).resolves.toMatchObject({ ok: true });
       } finally {
         pendingBackend.resolve(pendingPty);
         await opening;
@@ -564,8 +476,6 @@ describe("TerminalSessionManager agent session lifecycle", () => {
         pendingPty.emitExit(0);
         await drain?.drained.catch(() => {});
         drain?.release();
-        manager.disposeAll();
-        vi.useRealTimers();
       }
     },
   );
@@ -579,16 +489,12 @@ describe("TerminalSessionManager agent session lifecycle", () => {
       await Promise.all([first.drained, second.drained]);
       first.release();
       first.release();
-      await expect(manager.open(baseRequest({ owner }))).resolves.toMatchObject({
-        ok: false,
-        code: "closed",
-      });
+      await expect(start(manager, { owner })).resolves.toMatchObject({ ok: false, code: "closed" });
       second.release();
-      await expect(manager.open(baseRequest({ owner }))).resolves.toMatchObject({ ok: true });
+      await expect(start(manager, { owner })).resolves.toMatchObject({ ok: true });
     } finally {
       first.release();
       second.release();
-      manager.disposeAll();
     }
   });
 
@@ -597,18 +503,11 @@ describe("TerminalSessionManager agent session lifecycle", () => {
     const pendingPty = makeFakePty();
     const { promise: pendingBackend, resolve: resolvePending } =
       createDeferred<ReturnType<typeof makeFakePty>>();
-    const replacementPtys = [makeFakePty(), makeFakePty()];
-    let spawnIndex = 0;
-    const manager = new TerminalSessionManager({
-      emit: vi.fn(),
-      spawn: async () => replacementPtys[spawnIndex++] ?? makeFakePty(),
-    });
+    const { manager } = fixture({ spawn: async () => makeFakePty() });
     const oldOwner = agentTerminalOwner("agent:main:archive-target", "old-session");
     const replacementOwner = agentTerminalOwner("agent:main:archive-target", "replacement-session");
     await open(manager, { owner: oldOwner, createBackend: async () => oldPty });
-    const pending = manager.open(
-      baseRequest({ owner: oldOwner, createBackend: () => pendingBackend }),
-    );
+    const pending = start(manager, { owner: oldOwner, createBackend: () => pendingBackend });
 
     const drain = manager.beginAgentSessionDrain(oldOwner);
     expect(oldPty.killed).toBe(true);
@@ -622,89 +521,69 @@ describe("TerminalSessionManager agent session lifecycle", () => {
     pendingPty.emitExit(0);
     await expect(drain.drained).resolves.toBeUndefined();
     expect(drain.hasWork()).toBe(false);
-    await expect(manager.open(baseRequest({ owner: oldOwner }))).resolves.toMatchObject({
+    await expect(start(manager, { owner: oldOwner })).resolves.toMatchObject({
       ok: false,
       code: "closed",
     });
-    await expect(manager.open(baseRequest({ owner: replacementOwner }))).resolves.toMatchObject({
-      ok: true,
-    });
+    await open(manager, { owner: replacementOwner });
 
     drain.release();
-    await expect(manager.open(baseRequest({ owner: oldOwner }))).resolves.toMatchObject({
-      ok: true,
-    });
+    await open(manager, { owner: oldOwner });
   });
 });
 
 describe("TerminalSessionManager open cancellation", () => {
   it("kills a backend that finishes after its open request is cancelled", async () => {
-    const spawned = createDeferred<FakeTerminalPty>();
-    const controller = new AbortController();
-    const first = makeFakePty();
+    const first = heldPty();
     const second = makeFakePty();
-    let spawnCount = 0;
-    const manager = new TerminalSessionManager({
-      emit: vi.fn(),
-      maxSessions: 1,
-      spawn: () => (spawnCount++ === 0 ? spawned.promise : Promise.resolve(second)),
-    });
-    const opening = manager.open(baseRequest({ signal: controller.signal }));
+    const controller = new AbortController();
+    const spawn = vi.fn(first.spawn).mockImplementationOnce(first.spawn).mockResolvedValue(second);
+    const { manager } = fixture({ maxSessions: 1, spawn });
+    const opening = start(manager, { signal: controller.signal });
 
     controller.abort(new Error("terminal open timed out"));
-    const next = await manager.open(baseRequest({ owner: { kind: "conn", connId: "conn-2" } }));
-    expect(next.ok).toBe(true);
-    spawned.resolve(first);
+    const next = await open(manager, { owner: { kind: "conn", connId: "conn-2" } });
+    first.release();
 
     await expect(opening).resolves.toEqual({
       ok: false,
       code: "closed",
       message: "terminal open timed out",
     });
-    expect(first.killed).toBe(true);
+    expect(first.fake.killed).toBe(true);
     expect(manager.size).toBe(1);
-    if (next.ok) {
-      expect(manager.close("conn-2", next.sessionId)).toBe(true);
-    }
+    expect(manager.close("conn-2", next.sessionId)).toBe(true);
     expect(second.killed).toBe(true);
     expect(manager.size).toBe(0);
   });
 
   it("bounds cancelled backend operations until they settle", async () => {
-    const firstSpawn = createDeferred<FakeTerminalPty>();
-    const secondSpawn = createDeferred<FakeTerminalPty>();
+    const first = heldPty();
+    const second = heldPty();
     const firstController = new AbortController();
     const secondController = new AbortController();
-    let spawnCount = 0;
-    const manager = new TerminalSessionManager({
-      emit: vi.fn(),
-      maxSessions: 1,
-      spawn: () => (spawnCount++ === 0 ? firstSpawn.promise : secondSpawn.promise),
-    });
+    const spawn = vi.fn(second.spawn).mockImplementationOnce(first.spawn);
+    const { manager } = fixture({ maxSessions: 1, spawn });
 
-    const firstOpening = manager.open(baseRequest({ signal: firstController.signal }));
+    const firstOpening = start(manager, { signal: firstController.signal });
     firstController.abort(new Error("first cancelled"));
-    const secondOpening = manager.open(
-      baseRequest({ owner: { kind: "conn", connId: "conn-2" }, signal: secondController.signal }),
-    );
+    const secondOpening = start(manager, {
+      owner: { kind: "conn", connId: "conn-2" },
+      signal: secondController.signal,
+    });
     secondController.abort(new Error("second cancelled"));
 
-    await expect(
-      manager.open(baseRequest({ owner: { kind: "conn", connId: "conn-3" } })),
-    ).resolves.toEqual({
+    await expect(start(manager, { owner: { kind: "conn", connId: "conn-3" } })).resolves.toEqual({
       ok: false,
       code: "limit",
       message: "terminal spawn limit reached (2)",
     });
 
-    const first = makeFakePty();
-    const second = makeFakePty();
-    firstSpawn.resolve(first);
-    secondSpawn.resolve(second);
+    first.release();
+    second.release();
     await expect(firstOpening).resolves.toMatchObject({ ok: false, code: "closed" });
     await expect(secondOpening).resolves.toMatchObject({ ok: false, code: "closed" });
-    expect(first.killed).toBe(true);
-    expect(second.killed).toBe(true);
+    expect([first.fake, second.fake]).toMatchObject([{ killed: true }, { killed: true }]);
   });
 });
 
@@ -716,7 +595,7 @@ describe("TerminalSessionManager output ring", () => {
     fake.emitData("efgh");
     expect(manager.snapshot(outcome.sessionId)).toBe("abcdefgh");
     fake.emitData("ijkl");
-    // Cap exceeded: the oldest whole chunk goes; boundaries stay intact.
+
     expect(manager.snapshot(outcome.sessionId)).toBe("efghijkl");
 
     for (let value = 0; value < 5_000; value += 1) {
