@@ -32,6 +32,7 @@ import {
   shouldBundleRuntimeSqliteDependency,
   standaloneRuntimeProcessBuildEntries,
 } from "./scripts/lib/runtime-process-core-build-entries.mts";
+import { createSqliteSchemaAssetsPlugin } from "./scripts/lib/sqlite-schema-assets.mts";
 import {
   createStateSchemaInlinePlugin,
   STATE_SCHEMA_INLINE_PLUGIN_NAME,
@@ -249,6 +250,9 @@ function nodeBuildConfig(
       typeof declarations === "object" && declarations.emitDtsOnly
         ? undefined
         : createPublicSessionLocalesPlugin(),
+      typeof declarations === "object" && declarations.emitDtsOnly
+        ? undefined
+        : createSqliteSchemaAssetsPlugin(),
       config.plugins,
     ],
     env,
@@ -299,6 +303,7 @@ function workerDeployBuildConfig(entry: Record<string, string>, split = false): 
     plugins: [
       createStateSchemaInlinePlugin(),
       createPublicSessionLocalesPlugin(),
+      createSqliteSchemaAssetsPlugin(undefined, undefined, { workerChunks: true }),
       createWorkerDeployBuildPlugin(),
     ],
     shims: true,

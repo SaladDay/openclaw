@@ -13,7 +13,7 @@ import {
 const suite = createNewSessionPageE2eSuite();
 
 suite.define(() => {
-  it.each([1, 2])("keeps phone setup selectors on one row with %s agents", async (agentCount) => {
+  it.each([1, 2])("keeps phone setup compact with %s agents", async (agentCount) => {
     await suite.withPage(
       { viewport: { width: 390, height: 844 }, hasTouch: true },
       async ({ page }) => {
@@ -51,6 +51,14 @@ suite.define(() => {
         });
         await page.goto(`${suite.server.baseUrl}new`);
         const checkout = page.locator("#new-session-checkout-trigger");
+        await checkout.waitFor();
+        await page.mouse.move(0, 0);
+        await captureNewSessionComposerUiProof(suite, page, "mobile-setup-current.png");
+        expect(
+          await page
+            .locator("#new-session-project-trigger .new-session-page__trigger-label")
+            .evaluate((element) => element.scrollWidth <= element.clientWidth),
+        ).toBe(true);
         await checkout.click();
         await page
           .getByRole("button", { name: "New worktree Isolated copy of the repo", exact: true })
@@ -58,7 +66,7 @@ suite.define(() => {
         await page.keyboard.press("Escape");
         await expect.poll(() => checkout.getAttribute("data-worktree")).toBe("true");
         const selectors = page.locator(
-          ".new-session-page__triggers .agent-select__trigger, .new-session-page__triggers > span > .new-session-page__trigger",
+          ".new-session-page .agent-select__trigger, .new-session-page__triggers .new-session-page__trigger",
         );
         await expect.poll(() => selectors.count()).toBe(agentCount + 2);
         await page.evaluate(() => document.fonts.ready);
@@ -74,6 +82,8 @@ suite.define(() => {
             .locator(mobile ? ".shell--mobile-nav" : ".shell:not(.shell--mobile-nav)")
             .waitFor();
           await selectors.first().click({ trial: true });
+          await checkout.evaluate((element) => element.blur());
+          await page.mouse.move(0, 0);
           // Measure only after the shell mode, controls, and container layout settle.
           await waitForLayoutSettled(page, ".new-session-page__triggers button");
           await captureNewSessionComposerUiProof(suite, page, `mobile-setup-${width}.png`);
@@ -85,21 +95,27 @@ suite.define(() => {
             await captureNewSessionComposerUiProof(suite, page, "mobile-setup-dark.png");
             await evaluateControlUiContext(page, (context) => context.theme.setMode("light"));
           }
-          const layout = await selectors.evaluateAll((buttons) =>
-            buttons.map((button) => {
-              const box = button.getBoundingClientRect();
-              // Flex/grid aligns the wrapper; inline button baselines can differ within one row.
-              const item = button.closest(".new-session-page__select")!.getBoundingClientRect();
-              return {
-                row: Math.round(item.top + item.height / 2),
-                left: box.left,
-                right: box.right,
-                height: box.height,
-                width: box.width,
-              };
-            }),
-          );
-          expect(new Set(layout.map((box) => box.row)).size).toBe(1);
+          const layout = await page
+            .locator(".new-session-page__triggers .new-session-page__trigger")
+            .evaluateAll((buttons) =>
+              buttons.map((button) => {
+                const box = button.getBoundingClientRect();
+                // Flex/grid aligns the wrapper; inline button baselines can differ within one row.
+                const item = button.closest(".new-session-page__select")!.getBoundingClientRect();
+                return {
+                  row: Math.round(item.top + item.height / 2),
+                  left: box.left,
+                  right: box.right,
+                  height: box.height,
+                  width: box.width,
+                };
+              }),
+            );
+          expect(new Set(layout.map((box) => box.row)).size).toBeLessThanOrEqual(mobile ? 2 : 1);
+          if (mobile) {
+            const local = page.locator("#new-session-where-trigger");
+            expect((await local.boundingBox())!.width).toBeLessThanOrEqual(100);
+          }
           for (const [index, box] of layout.entries()) {
             expect(box.left).toBeGreaterThanOrEqual(0);
             expect(box.right).toBeLessThanOrEqual(width);
@@ -117,6 +133,13 @@ suite.define(() => {
         for (const selector of await selectors.all()) {
           await selector.click();
           await expect.poll(() => selector.getAttribute("aria-expanded")).toBe("true");
+          const panelSelector =
+            ".oc-popover.new-session-page__picker-popover:popover-open, .agent-select__menu:popover-open";
+          await waitForLayoutSettled(page, panelSelector);
+          const panelBox = await page.locator(panelSelector).boundingBox();
+          expect(panelBox!.x).toBeGreaterThanOrEqual(0);
+          expect(panelBox!.x + panelBox!.width).toBeLessThanOrEqual(320);
+          expect(await page.evaluate(() => window.scrollX)).toBe(0);
           await page.keyboard.press("Escape");
           await expect.poll(() => selector.getAttribute("aria-expanded")).toBe("false");
           await selector.focus();
@@ -136,7 +159,30 @@ suite.define(() => {
         expect(
           await triggerRow.evaluate((element) => element.scrollWidth <= element.clientWidth),
         ).toBe(true);
+        await checkout.evaluate((element) => element.blur());
+        await page.mouse.move(0, 0);
         await captureNewSessionComposerUiProof(suite, page, "mobile-setup-long-branch.png");
+        // Who belongs with the welcome identity, not with execution placement.
+        const heading = page.locator(".agent-chat__welcome-name");
+        if (agentCount > 1) {
+          expect(
+            await heading
+              .locator(".agent-select__trigger")
+              .evaluate((element) => getComputedStyle(element).fontSize),
+          ).toBe(await heading.evaluate((element) => getComputedStyle(element).fontSize));
+        }
+        expect(
+          await page.locator(".agent-chat__welcome-identity .agent-select__trigger").count(),
+        ).toBe(agentCount - 1);
+        expect(await triggerRow.locator(".agent-select__trigger").count()).toBe(0);
+        const projectBox = await page.locator("#new-session-project-trigger").boundingBox();
+        const checkoutBox = await checkout.boundingBox();
+        expect(projectBox!.y).toBe(checkoutBox!.y);
+        expect(
+          await page
+            .locator("#new-session-project-trigger .new-session-page__trigger-label")
+            .evaluate((element) => element.scrollWidth <= element.clientWidth),
+        ).toBe(true);
       },
     );
   });
@@ -259,7 +305,7 @@ suite.define(() => {
     });
   });
 
-  it("keeps the mobile composer within reach and lets long prompts scroll", async () => {
+  it("centers the mobile composer and scrolls long prompts inside the editor", async () => {
     await suite.withPage({ viewport: { width: 320, height: 568 } }, async ({ page }) => {
       await installMockGateway(page, {
         methodResponses: {
@@ -290,16 +336,18 @@ suite.define(() => {
       expect(await scroll.evaluate((element) => element.scrollHeight - element.clientHeight)).toBe(
         0,
       );
-      const bottomGap = await composer.evaluate(
-        (element) => innerHeight - element.getBoundingClientRect().bottom,
-      );
-      expect(bottomGap).toBeGreaterThanOrEqual(0);
-      expect(bottomGap).toBeLessThanOrEqual(16);
+      const composerBox = await composer.boundingBox();
+      expect(composerBox!.y).toBeGreaterThan(58);
+      expect(composerBox!.y + composerBox!.height).toBeLessThan(568);
 
       await textarea.fill("A line of a longer first prompt.\n".repeat(20));
       await waitForLayoutSettled(page, ".new-session-page__composer");
       await composer.scrollIntoViewIfNeeded();
-      expect(await scroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+      expect(
+        await textarea.evaluate((element) => element.scrollHeight > element.clientHeight),
+      ).toBe(true);
+      const sendBox = await page.locator(".new-session-page__start-submit").boundingBox();
+      expect(sendBox!.y + sendBox!.height).toBeLessThanOrEqual(568);
       await textarea.fill("");
       await waitForLayoutSettled(page, ".new-session-page__composer");
       expect(await scroll.evaluate((element) => element.scrollHeight - element.clientHeight)).toBe(

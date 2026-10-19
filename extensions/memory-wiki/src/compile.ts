@@ -8,6 +8,7 @@ import {
   replaceManagedMarkdownBlock,
   withTrailingNewline,
 } from "openclaw/plugin-sdk/memory-host-markdown";
+import { canAccess } from "openclaw/plugin-sdk/path-existence-runtime";
 import { root as fsRoot } from "openclaw/plugin-sdk/security-runtime";
 import {
   normalizeLowercaseStringOrEmpty,
@@ -677,13 +678,20 @@ function buildRelatedBlockBody(
   );
   const sourcePages = uniquePages(page.sourceIds.flatMap((id) => pagesById.get(id) ?? []));
   const backlinkKeys = new Set(
-    [page.relativePath, page.title, ...(page.id ? [page.id] : [])].map(normalizeComparableTarget),
+    [
+      page.relativePath,
+      path.posix.basename(page.relativePath),
+      page.title,
+      ...(page.id ? [page.id] : []),
+    ].map(normalizeComparableTarget),
   );
   const backlinks = uniquePages(
     otherPages.filter(
       (candidate) =>
         candidate.sourceIds.includes(page.id ?? "") ||
-        candidate.linkTargets.some((target) => backlinkKeys.has(normalizeComparableTarget(target))),
+        candidate.linkTargets.some((target) =>
+          backlinkKeys.has(normalizeComparableTarget(target.split("#")[0] ?? "")),
+        ),
     ),
   );
   const backlinkPages =
@@ -1137,11 +1145,7 @@ async function hasMissingWikiIndexes(rootDir: string): Promise<boolean> {
     ...WIKI_PAGE_GROUPS.map((group) => path.join(rootDir, group.dir, "index.md")),
   ];
   for (const filePath of required) {
-    const exists = await fs
-      .access(filePath)
-      .then(() => true)
-      .catch(() => false);
-    if (!exists) {
+    if (!(await canAccess(filePath))) {
       return true;
     }
   }

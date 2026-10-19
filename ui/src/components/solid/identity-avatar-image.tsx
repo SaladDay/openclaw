@@ -1,5 +1,6 @@
-import { createEffect, createMemo, onCleanup, untrack, type Accessor } from "solid-js";
+import { createEffect, createMemo, onCleanup, type Accessor } from "solid-js";
 import { retainAvatarImageUrl } from "../../lib/identity-avatar-loader.ts";
+import { listen } from "../../lib/reactive/listener.ts";
 
 type IdentityAvatarImageProps = {
   view: { imageUrl: string | Promise<string | null> | null };
@@ -39,11 +40,11 @@ export function identityAvatarState(
 }
 
 /** The existing loader owns image resources; this binding owns DOM state and events. */
-function bindIdentityAvatarImage(input: Accessor<IdentityAvatarImageProps>) {
+export function IdentityAvatarImage(props: IdentityAvatarImageProps) {
   let image: HTMLImageElement;
   let release: (() => void) | undefined;
   const state = (value: "pending" | "loaded" | "failed") => {
-    const frame = image.closest(untrack(() => input().fallbackSelector));
+    const frame = image.closest(props.fallbackSelector);
     if (frame) {
       setIdentityAvatarState(frame, value);
     }
@@ -51,10 +52,10 @@ function bindIdentityAvatarImage(input: Accessor<IdentityAvatarImageProps>) {
   const load = () => state("loaded");
   const error = () => {
     state("failed");
-    input().onImageError?.();
+    props.onImageError?.();
   };
   // Keep the pending resource opaque: returning its Promise would make this an async memo.
-  const source = createMemo(() => ({ result: input().view.imageUrl }), {
+  const source = createMemo(() => ({ result: props.view.imageUrl }), {
     equals: (previous, next) => previous.result === next.result,
   });
   createEffect(source, ({ result }) => {
@@ -75,47 +76,38 @@ function bindIdentityAvatarImage(input: Accessor<IdentityAvatarImageProps>) {
         }
       }
       // Refs run before their wrapper is inserted; cached decodes emit no event.
-      queueMicrotask(() =>
-        untrack(() => {
-          if (
-            active &&
-            url &&
-            image.getAttribute("src") === url &&
-            image.complete &&
-            image.naturalWidth > 0
-          ) {
-            load();
-          }
-        }),
-      );
+      queueMicrotask(() => {
+        if (
+          active &&
+          url &&
+          image.getAttribute("src") === url &&
+          image.complete &&
+          image.naturalWidth > 0
+        ) {
+          load();
+        }
+      });
     };
     if (typeof result === "string" || result === null) {
       apply(result);
     } else {
       image.removeAttribute("src");
       state("pending");
-      void result.then((url) => untrack(() => apply(url)));
+      void result.then(apply);
     }
     return () => {
       active = false;
     };
   });
-  onCleanup(() => {
-    image.removeEventListener("load", load);
-    image.removeEventListener("error", error);
-    release?.();
-  });
-  return (element: HTMLImageElement) => {
-    image = element;
-    image.addEventListener("load", load);
-    image.addEventListener("error", error);
-  };
-}
-
-export function IdentityAvatarImage(props: IdentityAvatarImageProps) {
+  // Retired image nodes can still emit errors after a replacement owns the avatar.
+  const cleanup = [() => release?.()];
+  onCleanup(() => cleanup.forEach((stop) => stop()));
   return (
     <img
-      ref={bindIdentityAvatarImage(() => props)}
+      ref={(element) => {
+        image = element;
+        cleanup.push(listen(image, "load", load), listen(image, "error", error));
+      }}
       class={props.class}
       alt={props.alt ?? ""}
       aria-hidden={props.ariaHidden ? "true" : undefined}

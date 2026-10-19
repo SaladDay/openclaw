@@ -4,16 +4,17 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveBuildInfo } from "../write-build-info.ts";
+import { createFsSafeWindowsHelperAssetPlugin } from "./fs-safe-windows-helper-asset.mts";
 import { createManagedHandoffBuildConfigs } from "./managed-handoff-build-config.mts";
 import { createPublicSessionCardAssetsPlugin } from "./public-session-card-assets.mts";
 import { createPublicSessionLocalesPlugin } from "./public-session-locales.mts";
-import { collectRuntimeImportClosure } from "./runtime-import-closure.mts";
 import {
   getStandaloneRuntimeProcessOutputOptions,
   sharedRuntimeProcessBuildEntries,
   shouldBundleRuntimeSqliteDependency,
   standaloneRuntimeProcessBuildEntries,
 } from "./runtime-process-core-build-entries.mts";
+import { createSqliteSchemaAssetsPlugin } from "./sqlite-schema-assets.mts";
 import { createStateSchemaInlinePlugin } from "./state-schema-inline-plugin.mts";
 import {
   hashVitestWorkerArtifact,
@@ -41,19 +42,8 @@ async function compileVitestWorkerArtifacts(directory: string): Promise<void> {
       console.error(`[vitest-workers] ${phase} after ${Math.round(performance.now() - started)}ms`);
     }
   };
-  const compilerInputs = collectRuntimeImportClosure(
-    root,
-    [
-      "scripts/lib/vitest-worker-compiler.mts",
-      "scripts/lib/vitest-worker-run.mts",
-      "scripts/lib/vitest-cli-mode.mts",
-    ],
-    { includeDynamicImports: true },
-  );
   const cache = useVitestWorkerCache(process.env, process.execArgv)
-    ? await (
-        await import("./vitest-worker-cache.mts")
-      ).createVitestWorkerCache(root, directory, compilerInputs)
+    ? await (await import("./vitest-worker-cache.mts")).createVitestWorkerCache(root, directory)
     : undefined;
   const restored = await cache?.restore();
   if (cache) {
@@ -69,6 +59,21 @@ async function compileVitestWorkerArtifacts(directory: string): Promise<void> {
     console.error("[vitest-workers] reused local compiler outputs");
     return;
   }
+  const { collectRuntimeImportClosure } = await import("./runtime-import-closure.mts");
+  const { readNativeTypeScriptConfig } = await import("./native-typescript-config.mts");
+  const compilerInputs = collectRuntimeImportClosure(
+    root,
+    [
+      "scripts/lib/vitest-worker-compiler.mts",
+      "scripts/lib/vitest-worker-run.mts",
+      "scripts/lib/vitest-cli-mode.mts",
+    ],
+    { includeDynamicImports: true },
+  );
+  const { configFiles } = readNativeTypeScriptConfig({
+    cwd: root,
+    configFileName: "tsconfig.json",
+  });
   // The native child owns the compiler module graph for this one preparation.
   const { build }: typeof import("tsdown") = require("tsdown");
   const inputs: Record<string, string> = {};
@@ -96,13 +101,13 @@ async function compileVitestWorkerArtifacts(directory: string): Promise<void> {
     }
   };
   for (const name of [
-    "tsconfig.json",
+    ...configFiles,
     "package.json",
     "pnpm-lock.yaml",
     // Pin compiler, lifetime, and source-versus-compiled selection code, including lazy platforms.
     ...compilerInputs,
   ]) {
-    recordInput(path.join(root, name));
+    recordInput(path.resolve(root, name));
   }
   const entry = {
     ...vitestWorkerBuildEntries,
@@ -120,6 +125,7 @@ async function compileVitestWorkerArtifacts(directory: string): Promise<void> {
     return [
       createPublicSessionCardAssetsPlugin(root, recordInput),
       createPublicSessionLocalesPlugin(root, recordInput),
+      createSqliteSchemaAssetsPlugin(root, recordInput),
       {
         ...schemaPlugin,
         name: "openclaw:worker-build-inputs",
@@ -325,7 +331,12 @@ async function compileVitestWorkerArtifacts(directory: string): Promise<void> {
         outDir,
         clean: false,
         logLevel: config.logLevel,
-        plugins: config.plugins,
+        // Keep the invocation's loader boundaries while recording the binary
+        // input and output alongside its sealed JavaScript consumers.
+        plugins: [
+          createFsSafeWindowsHelperAssetPlugin(root, undefined, recordInput),
+          config.plugins,
+        ],
       });
     }
     reportPhase("managed handoff compiled");

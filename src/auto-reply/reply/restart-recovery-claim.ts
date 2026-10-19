@@ -105,18 +105,6 @@ export function createReplyRestartRecoveryClaimController(params: {
   let sessionActor: SessionActor | undefined;
   let readTarget: SessionEntryTargetPatchScope | undefined;
   const recordReadTarget = (target: SessionEntryTargetPatchScope) => {
-    if (
-      readTarget &&
-      (readTarget.agentId !== target.agentId ||
-        readTarget.storePath !== target.storePath ||
-        readTarget.target.canonicalKey !== target.target.canonicalKey ||
-        readTarget.readSource?.agentId !== target.readSource?.agentId ||
-        readTarget.readSource?.path !== target.readSource?.path ||
-        readTarget.readSource?.databaseIdentity !== target.readSource?.databaseIdentity ||
-        readTarget.readSource?.databaseBirthtime !== target.readSource?.databaseBirthtime)
-    ) {
-      throw createRestartRecoveryClaimChangedError();
-    }
     readTarget ??= target;
   };
   const preparedTarget = () => {
@@ -298,7 +286,12 @@ export function createReplyRestartRecoveryClaimController(params: {
     storePath: string;
   }): Promise<SessionEntry> => {
     const expectedSessionState = buildRestartRecoveryExpectedState(options.entry);
-    if (options.recorder && !options.recorder.hasPersisted()) {
+    // A staged event remains durable while waiting for the execution lane. Promoting
+    // it here would let an earlier completion mistake the queued input for an orphan.
+    const pendingInternalInput =
+      params.inputProvenance?.kind === "internal_system" &&
+      options.recorder?.getPendingInputMessage?.() !== undefined;
+    if (options.recorder && !options.recorder.hasPersisted() && !pendingInternalInput) {
       bindUserTurnInputActor(options.recorder, {
         phase: "adoptRun",
         acquire: async () => {
