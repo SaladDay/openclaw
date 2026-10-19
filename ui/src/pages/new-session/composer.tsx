@@ -8,6 +8,7 @@ import {
   resolveLobsterPetMode,
   resolveLobsterRunOutcome,
 } from "../../components/lobster-pet-contract.ts";
+import { createBackgroundLayoutRef } from "../../components/session-background-layout-context.tsx";
 import { Icon } from "../../components/solid/icon.tsx";
 import { registerNewSessionSetupEnglish } from "../../i18n/locales/en-new-session-setup.ts";
 import type { HumanMention } from "../../lib/chat/chat-types.ts";
@@ -418,6 +419,7 @@ function createComposerPlaceholder(options: () => NewSessionComposerOptions) {
 }
 
 export function NewSessionComposer(props: { options: NewSessionComposerOptions }) {
+  const backgroundLayoutRef = createBackgroundLayoutRef("composer");
   const draft = createMemo(() => {
     const source = props.options.draftSource;
     return source ? projectOwner(source, (owner) => owner.read()) : undefined;
@@ -474,6 +476,7 @@ export function NewSessionComposer(props: { options: NewSessionComposerOptions }
       onDragOver={(event) => frame().attachmentDropHandlers.onDragover(event)}
     >
       <div
+        ref={backgroundLayoutRef}
         class={[
           "agent-chat__input agent-chat__input--mobile-toolbar",
           {
