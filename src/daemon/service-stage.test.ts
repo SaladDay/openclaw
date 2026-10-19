@@ -5,6 +5,7 @@ import { runCliProcessChild } from "../cli/cli-process-child.test-helpers.js";
 import {
   GatewayServiceDefinitionBackupReceiptSchema,
   matchesServiceFilePublication,
+  matchesServiceFileState,
 } from "./service-stage.js";
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
@@ -84,6 +85,10 @@ describe("service backup receipt identity compatibility", () => {
       const legacy = GatewayServiceDefinitionBackupReceiptSchema.parse(input).files[0]!.after!;
       expect(legacy).toMatchObject({ dev: 7, ino: 42 });
       expect(matchesServiceFilePublication({ ...legacy, dev: "7", ino: "42" }, legacy)).toBe(true);
+      expect(matchesServiceFileState(legacy, legacy)).toBe(true);
+      for (const key of ["mtimeMs", "ctimeMs"] as const) {
+        expect(matchesServiceFileState({ ...legacy, [key]: legacy[key] + 1 }, legacy)).toBe(false);
+      }
 
       const fullWidth = { ...state, ino };
       const exact = GatewayServiceDefinitionBackupReceiptSchema.parse({

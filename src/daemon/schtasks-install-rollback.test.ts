@@ -120,6 +120,35 @@ async function fixture(enabled = false) {
   return { args, scriptPath, launcherPath, original, registration, assertRestored, assertBackups };
 }
 
+it.each([false, true])(
+  "accepts launcher timestamp changes during atomic replacement (rollback=%s)",
+  async (rollback) => {
+    const { args, scriptPath, launcherPath, assertRestored, assertBackups } = await fixture();
+    const rename = fs.rename;
+    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      await rename(from, to);
+      if (to === scriptPath || to === launcherPath) {
+        const stat = await fs.stat(to);
+        await fs.utimes(to, stat.atime, new Date(stat.mtimeMs + 1000));
+      }
+    });
+    const failure = new Error("Synthetic activation failure");
+    if (rollback) {
+      native.run.mockRejectedValueOnce(failure);
+      // Successful rollback reports only the original failure, with no restoration errors.
+      await expect(installScheduledTask(args)).rejects.toBe(failure);
+      await assertRestored();
+    } else {
+      await expect(installScheduledTask(args)).resolves.toEqual({ scriptPath });
+      expect((await readScheduledTaskCommand(args.env))?.programArguments).toEqual(
+        args.programArguments,
+      );
+    }
+    expect(native.run).toHaveBeenCalledOnce();
+    await assertBackups();
+  },
+);
+
 it.each(
   ["runtime", "arguments", "environment"].flatMap((change) => [
     { change, unattended: false },
@@ -507,7 +536,7 @@ it.each([
   expect(args.warn).not.toHaveBeenCalled();
 });
 
-it.each(["before-rename", "after-rename", "foreign-after-rename"])(
+it.each(["before-rename", "after-rename", "foreign-after-rename", "changed-content-after-rename"])(
   "settles a launcher publication failure %s before reporting recovery",
   async (phase) => {
     const { args, scriptPath, launcherPath, original, assertRestored, assertBackups } =
@@ -553,6 +582,11 @@ it.each(["before-rename", "after-rename", "foreign-after-rename"])(
             await fs.writeFile(replacement, await fs.readFile(scriptPath), { mode: 0o600 });
             await rename(replacement, scriptPath);
             foreignInode = (await fs.stat(scriptPath)).ino;
+          } else if (phase === "changed-content-after-rename") {
+            foreignInode = (await fs.stat(scriptPath)).ino;
+            const contents = await fs.readFile(scriptPath);
+            contents[0] = contents[0]! ^ 1;
+            await fs.writeFile(scriptPath, contents);
           }
           revoked = true;
           throw new Error("Published launcher descriptor close failed");
@@ -571,7 +605,7 @@ it.each(["before-rename", "after-rename", "foreign-after-rename"])(
             : "recovery-pending",
     });
     expect(faulted).toBe(true);
-    if (phase === "foreign-after-rename") {
+    if (phase === "foreign-after-rename" || phase === "changed-content-after-rename") {
       expect((await fs.stat(scriptPath)).ino).toBe(foreignInode);
       expect(await fs.readFile(scriptPath)).not.toEqual(original);
       expect(await fs.readFile(launcherPath, "utf8")).toBe("original hidden launcher");
