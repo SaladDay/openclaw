@@ -1,3 +1,4 @@
+import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { splitQaModelRef } from "./model-selection.js";
 import { readQaScenarioById } from "./scenario-catalog.js";
@@ -17,9 +18,11 @@ const identityCases = [
   ["reused-context", "reused one execution identity"],
   ["restart-drift", "changed across Gateway replacement"],
 ] as const;
-type Fault = "none" | (typeof identityCases)[number][0];
+type ReplyPredicate = (text: string) => boolean;
+const present = <T extends object>(fields: T) => ({ state: "present", ...fields });
+const pseudonym = (digit: string) => `hmac-sha256:v1:${"a".repeat(32)}:${digit.repeat(64)}`;
 
-function runIdentityFlow(fault: Fault = "none") {
+function runIdentityFlow(fault?: (typeof identityCases)[number][0]) {
   let turn = 0;
   let marker = "";
   let restarted = false;
@@ -27,56 +30,42 @@ function runIdentityFlow(fault: Fault = "none") {
     runId,
     contextId: fault === "reused-context" ? "context-1" : `context-${turn}`,
     executionId: `execution-${turn}`,
-    ingress: {
-      state: "present",
-      kind: "gateway-client",
-      boundary: "gateway.ws.authenticated-connect",
-    },
+    ingress: present({ kind: "gateway-client", boundary: "gateway.ws.authenticated-connect" }),
     invoker: { state: "absent" },
     coverageState: "unattributed",
     agentPrincipal: { kind: "agent", principalRef: "qa" },
     agentDefinition: { definitionRef: "qa" },
-    trustDomain: { state: "present", domainRef: pseudonym("b") },
-    runtimeInstance: {
-      state: "present",
+    trustDomain: present({ domainRef: pseudonym("b") }),
+    runtimeInstance: present({
       kind: "embedded",
       runtimeRef: fault === "raw-runtime" ? "private-runtime" : pseudonym("c"),
-    },
+    }),
   });
   const contexts = new Map<string, ReturnType<typeof makeContext>>();
   const call = vi.fn(async (method: string, params: Record<string, string>) => {
     if (method === "agent") {
-      turn += 1;
-      if (!params.message) {
-        throw new Error("live identity proof must send an agent message");
-      }
-      marker = params.message.replace("Reply exactly: ", "");
-      const runId = `run-${turn}`;
+      marker = expectDefined(params.message || undefined, "message").replace("Reply exactly: ", "");
+      const runId = `run-${++turn}`;
       contexts.set(runId, makeContext(runId));
       return { status: "accepted", runId };
     }
     if (method === "chat.history") {
-      return {
-        messages: [
-          {
-            role: "assistant",
-            provider: fault === "model-fallback" ? "mock-openai" : "fixture-live",
-            model: "fixture-model",
-            stopReason: "stop",
-            content: [{ type: "text", text: marker }],
-          },
-        ],
+      const reply = {
+        role: "assistant",
+        provider: fault === "model-fallback" ? "mock-openai" : "fixture-live",
+        model: "fixture-model",
+        stopReason: "stop",
+        content: [{ type: "text", text: marker }],
       };
+      return { messages: [reply] };
     }
-    if (method !== "audit.run.inspect") {
-      throw new Error(`unexpected Gateway method ${method}`);
-    }
-    const context = params.runId
-      ? contexts.get(params.runId)
-      : [...contexts.values()].find((entry) => entry.executionId === params.executionId);
-    if (!context) {
-      throw new Error("inspection selected an unknown execution");
-    }
+    expect(method).toBe("audit.run.inspect");
+    const context = expectDefined(
+      params.runId
+        ? contexts.get(params.runId)
+        : [...contexts.values()].find((entry) => entry.executionId === params.executionId),
+      "selected execution",
+    );
     return {
       run: {
         runId: fault === "wrong-run" ? "foreign-run" : context.runId,
@@ -85,13 +74,12 @@ function runIdentityFlow(fault: Fault = "none") {
       identity:
         fault === "missing-identity"
           ? { state: "unsupported" }
-          : {
-              state: "present",
+          : present({
               context: {
                 ...context,
                 ...(restarted && fault === "restart-drift" ? { contextId: "replacement" } : {}),
               },
-            },
+            }),
       decisionDisplays: [
         {
           provenance: { state: "verified", producer: "run-admission" },
@@ -110,64 +98,48 @@ function runIdentityFlow(fault: Fault = "none") {
   });
   const runQaCli = vi.fn(async (_env: unknown, args: string[]) => {
     expect(args.slice(0, 2)).toEqual(["audit", "--execution"]);
-    const executionId = args[2];
-    if (!executionId) {
-      throw new Error("live identity proof must select an execution");
-    }
+    const executionId = expectDefined(args[2] || undefined, "execution");
     const inspection = await call("audit.run.inspect", { executionId });
     if (!args.includes("--json")) {
       return "Identity Invoker [absent] Decisions run_admission_identity_not_evaluated not-applicable";
     }
-    if (fault === "wrong-cli-execution") {
-      return { ...inspection, run: { executionId: "foreign-execution" } };
-    }
-    return inspection;
+    return fault === "wrong-cli-execution"
+      ? { ...inspection, run: { executionId: "foreign-execution" } }
+      : inspection;
   });
-  return {
-    call,
-    restart,
+  const api = {
+    env: {
+      providerMode: fault === "mock-lane" ? "mock-openai" : "live-frontier",
+      primaryModel: "fixture-live/fixture-model",
+      gateway: { call, restartAfterStateMutation: restart },
+    },
+    splitModelRef: splitQaModelRef,
+    waitForAgentRun: async (_env: unknown, runId: string) => {
+      expect(contexts.has(runId)).toBe(true);
+      return { status: "ok" };
+    },
+    waitForAgentHistoryReply: async (_env: unknown, _key: string, matches: ReplyPredicate) => {
+      expect(matches(marker)).toBe(true);
+      return marker;
+    },
     runQaCli,
-    result: runLoadedScenarioFlow(SCENARIO, {
-      api: {
-        env: {
-          providerMode: fault === "mock-lane" ? "mock-openai" : "live-frontier",
-          primaryModel: "fixture-live/fixture-model",
-          gateway: { call, restartAfterStateMutation: restart },
-        },
-        splitModelRef: splitQaModelRef,
-        waitForAgentRun: async (_env: unknown, runId: string) => {
-          expect(contexts.has(runId)).toBe(true);
-          return { status: "ok" };
-        },
-        waitForAgentHistoryReply: async (
-          _env: unknown,
-          _session: string,
-          predicate: (text: string) => boolean,
-        ) => {
-          expect(predicate(marker)).toBe(true);
-          return marker;
-        },
-        runQaCli,
-      },
-    }),
   };
+  return { call, restart, runQaCli, result: runLoadedScenarioFlow(SCENARIO, { api }) };
 }
 
 describe("live-frontier execution identity qualification", () => {
   it("rejects mock selection and admits the operator-selected live model", () => {
     const scenario = readQaScenarioById(SCENARIO);
-    const selection = { scenarios: [scenario], primaryModel: "fixture-live/fixture-model" };
-    expect(selectQaFlowSuiteScenarios({ ...selection, providerMode: "mock-openai" })).toEqual([]);
-    expect(() =>
+    const select = (providerMode: "mock-openai" | "live-frontier", scenarioIds?: string[]) =>
       selectQaFlowSuiteScenarios({
-        ...selection,
-        providerMode: "mock-openai",
-        scenarioIds: [SCENARIO],
-      }),
-    ).toThrow("providerMode=live-frontier");
-    expect(selectQaFlowSuiteScenarios({ ...selection, providerMode: "live-frontier" })).toEqual([
-      scenario,
-    ]);
+        scenarios: [scenario],
+        primaryModel: "fixture-live/fixture-model",
+        providerMode,
+        scenarioIds,
+      });
+    expect(select("mock-openai")).toEqual([]);
+    expect(() => select("mock-openai", [SCENARIO])).toThrow("providerMode=live-frontier");
+    expect(select("live-frontier")).toEqual([scenario]);
     expect(scenario.gatewayConfigPatch).toMatchObject({
       logging: { audit: { enabled: true, executionIdentity: true } },
     });
@@ -188,7 +160,3 @@ describe("live-frontier execution identity qualification", () => {
     },
   );
 });
-
-function pseudonym(digit: string) {
-  return `hmac-sha256:v1:${"a".repeat(32)}:${digit.repeat(64)}`;
-}
