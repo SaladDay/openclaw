@@ -15,8 +15,8 @@ function registry(...plugins: PluginManifestRecord[]): PluginManifestRegistry {
   return { diagnostics: [], plugins };
 }
 
-function install(...plugins: PluginManifestRecord[]) {
-  mockLoadPluginManifestRegistry.mockReturnValue(registry(...plugins));
+function install(...plugins: Parameters<typeof plugin>[0][]) {
+  mockLoadPluginManifestRegistry.mockReturnValue(registry(...plugins.map(plugin)));
 }
 
 function validatedConfig(result: ReturnType<typeof validateConfigObjectWithPlugins>) {
@@ -32,24 +32,7 @@ const objectSchema = (
   options: Record<string, unknown> = {},
 ) => ({ type: "object", properties, additionalProperties: false, ...options });
 
-function accountSchema() {
-  return objectSchema({ appId: { type: "string" } });
-}
-
-function feishuSchema(): Record<string, unknown> {
-  return objectSchema(
-    {
-      appId: { type: "string" },
-      appSecret: { type: "string" },
-      replyMode: { type: "string", enum: ["thread", "direct"] },
-      footer: { type: "string" },
-      accounts: { type: "object", additionalProperties: accountSchema() },
-    },
-    { required: ["appId", "appSecret"] },
-  );
-}
-
-function feishuPlugin(schema = feishuSchema(), id = "openclaw-lark") {
+function feishuPlugin(schema: Record<string, unknown> = objectSchema({}), id = "openclaw-lark") {
   return plugin({
     id,
     origin: "global",
@@ -59,9 +42,7 @@ function feishuPlugin(schema = feishuSchema(), id = "openclaw-lark") {
 }
 
 function validateFeishu(config: Record<string, unknown>) {
-  return validateConfigObjectRawWithPlugins({
-    channels: { feishu: { appId: "app-id", appSecret: "secret", ...config } },
-  });
+  return validateConfigObjectRawWithPlugins({ channels: { feishu: config } });
 }
 
 function pluginDefaultsRegistry() {
@@ -142,15 +123,13 @@ describe("config validation metadata", () => {
       name: "Authored model",
       contextWindow: 64_000,
     };
-    install(
-      plugin({
-        id: "fixture",
-        providers: ["fixture"],
-        modelCatalog: {
-          providers: { fixture: { models: [catalogModel] } },
-        },
-      }),
-    );
+    install({
+      id: "fixture",
+      providers: ["fixture"],
+      modelCatalog: {
+        providers: { fixture: { models: [catalogModel] } },
+      },
+    });
     const result = validateConfigObjectWithPlugins(source, { pluginValidation: "skip" });
     expect(validatedConfig(result).models?.providers?.fixture?.models).toMatchObject([
       expectedModel,
@@ -160,22 +139,20 @@ describe("config validation metadata", () => {
   });
 
   it("applies channel schema defaults even in raw mode", () => {
-    install(
-      plugin({
-        id: "telegram",
-        channels: ["telegram"],
-        channelCatalogMeta: { id: "telegram", label: "Telegram", blurb: "Telegram channel" },
-        channelConfigs: {
-          telegram: {
-            schema: objectSchema(
-              { dmPolicy: { type: "string", enum: ["pairing", "allowlist"], default: "pairing" } },
-              { additionalProperties: true },
-            ),
-            uiHints: {},
-          },
+    install({
+      id: "telegram",
+      channels: ["telegram"],
+      channelCatalogMeta: { id: "telegram", label: "Telegram", blurb: "Telegram channel" },
+      channelConfigs: {
+        telegram: {
+          schema: objectSchema(
+            { dmPolicy: { type: "string", enum: ["pairing", "allowlist"], default: "pairing" } },
+            { additionalProperties: true },
+          ),
+          uiHints: {},
         },
-      }),
-    );
+      },
+    });
     expect(
       validatedConfig(validateConfigObjectRawWithPlugins({ channels: { telegram: {} } })).channels
         ?.telegram?.dmPolicy,
@@ -183,22 +160,17 @@ describe("config validation metadata", () => {
   });
 
   it("normalizes composed local references without changing shared definitions", () => {
-    const schema = {
-      ...feishuSchema(),
-      properties: {
-        appId: { type: "string" },
-        appSecret: { type: "string" },
-        accounts: {
-          type: "object",
-          properties: { default: { $ref: "#/$defs/Account" } },
-          patternProperties: { "^work-": { $ref: "#/$defs/Account" } },
-          additionalProperties: { $ref: "#/$defs/Account" },
-        },
+    const schema = objectSchema({
+      accounts: {
+        type: "object",
+        properties: { default: { $ref: "#/$defs/Account" } },
+        patternProperties: { "^work-": { $ref: "#/$defs/Account" } },
+        additionalProperties: { $ref: "#/$defs/Account" },
       },
-    };
+    });
     const external = {
       $ref: "#/$defs/Root",
-      $defs: { Root: { anyOf: [schema] }, Account: accountSchema() },
+      $defs: { Root: { anyOf: [schema] }, Account: objectSchema({}) },
     };
     const original = structuredClone(external);
     install(feishuPlugin(external));
@@ -245,7 +217,7 @@ describe("config validation metadata", () => {
 
   it("keeps schema ownership when closer root metadata shadows a later schema", () => {
     install(
-      feishuPlugin(feishuSchema(), "openclaw" + String.fromCharCode(10, 27) + "[31m-lark"),
+      feishuPlugin(objectSchema({}), "openclaw" + String.fromCharCode(10, 27) + "[31m-lark"),
       plugin({ id: "workspace-channel-labels", origin: "workspace", channels: ["feishu"] }),
       feishuPlugin(objectSchema({ otherField: { type: "string" } }), "other-global-feishu"),
     );
@@ -265,22 +237,22 @@ describe("config validation metadata", () => {
     }
   });
 
-  it("does not inject plugin config defaults in raw mode", () => {
-    mockLoadPluginManifestRegistry.mockReturnValue(pluginDefaultsRegistry());
-    const result = validateConfigObjectRawWithPlugins({
-      plugins: { entries: { opik: { enabled: true } } },
-    });
-    expect(validatedConfig(result).plugins?.entries?.opik?.config).toBeUndefined();
-  });
-
-  it("loads a metadata snapshot once and applies its plugin defaults", () => {
-    const loadPluginMetadataSnapshot = vi.fn((_config: unknown) => ({
+  it.each([false, true])("materializes plugin defaults only in normal mode=%s", (materialized) => {
+    const loadPluginMetadataSnapshot = vi.fn(() => ({
       manifestRegistry: pluginDefaultsRegistry(),
     }));
-    const result = validateConfigObjectWithPlugins(enabledOpik, { loadPluginMetadataSnapshot });
-    const config = validatedConfig(result);
-    expect(loadPluginMetadataSnapshot).toHaveBeenCalledOnce();
-    expect(mockLoadPluginManifestRegistry).not.toHaveBeenCalled();
-    expect(config.plugins?.entries?.opik?.config).toEqual({ workspace: "default-workspace" });
+    if (!materialized) {
+      mockLoadPluginManifestRegistry.mockReturnValue(pluginDefaultsRegistry());
+    }
+    const result = materialized
+      ? validateConfigObjectWithPlugins(enabledOpik, { loadPluginMetadataSnapshot })
+      : validateConfigObjectRawWithPlugins({ plugins: { entries: { opik: { enabled: true } } } });
+    expect(loadPluginMetadataSnapshot).toHaveBeenCalledTimes(Number(materialized));
+    if (materialized) {
+      expect(mockLoadPluginManifestRegistry).not.toHaveBeenCalled();
+    }
+    expect(validatedConfig(result).plugins?.entries?.opik?.config).toEqual(
+      materialized ? { workspace: "default-workspace" } : undefined,
+    );
   });
 });

@@ -35,6 +35,29 @@ function expectRetainedInputs(home: string) {
   expect(fs.existsSync(path.join(home, ".openclaw", "openclaw.json"))).toBe(true);
 }
 
+function observeWorkerClose(
+  close: (scope: ReturnType<typeof workers.createSqliteReadOnlyWorkerScope>) => Promise<void>,
+) {
+  const create = workers.createSqliteReadOnlyWorkerScope;
+  return vi.spyOn(workers, "createSqliteReadOnlyWorkerScope").mockImplementation((options) => {
+    const scope = create(options);
+    return { run: scope.run.bind(scope), close: () => close(scope) };
+  });
+}
+
+function rejectAfterClose<Args extends unknown[]>(
+  close: (...args: Args) => Promise<void>,
+  events: string[],
+  event: string,
+  error: Error,
+) {
+  return async (...args: Args) => {
+    await close(...args);
+    events.push(event);
+    throw error;
+  };
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
@@ -43,23 +66,14 @@ afterEach(() => {
 it("joins an aborted Doctor phase and database cleanup before removing inputs or restoring env", async () => {
   const originalEnv = captureEnv();
   const fixture = createStateStartupCorpusFixture();
-  const createScope = workers.createSqliteReadOnlyWorkerScope;
   const closeAgents = agentDatabases.closeOpenClawAgentDatabasesAsync;
   const homes: string[] = [];
   const events: string[] = [];
-  const scopes = vi
-    .spyOn(workers, "createSqliteReadOnlyWorkerScope")
-    .mockImplementation((options) => {
-      const scope = createScope(options);
-      return {
-        run: scope.run.bind(scope),
-        close: async () => {
-          expect(fs.existsSync(process.env.OPENCLAW_CONFIG_PATH!)).toBe(true);
-          events.push("scope-close");
-          await scope.close();
-        },
-      };
-    });
+  const scopes = observeWorkerClose(async (scope) => {
+    expect(fs.existsSync(process.env.OPENCLAW_CONFIG_PATH!)).toBe(true);
+    events.push("scope-close");
+    await scope.close();
+  });
   const closeState = vi.spyOn(stateDatabase, "closeOpenClawStateDatabaseAsync");
   const diagnostics = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -252,36 +266,19 @@ it("retains fixture inputs and env when database or worker-scope cleanup cannot 
   const stateFailure = new Error("synthetic shared-state close failure");
   const scopeFailure = new Error("synthetic scope close failure");
   const closeAgents = agentDatabases.closeOpenClawAgentDatabasesAsync;
-  const createScope = workers.createSqliteReadOnlyWorkerScope;
   const cleanupOrder: string[] = [];
   vi.spyOn(console, "error").mockImplementation(() => {});
   vi.spyOn(doctor, "runDoctorConfigPreflight").mockRejectedValue(bodyFailure);
   vi.spyOn(agentDatabases, "closeOpenClawAgentDatabasesAsync").mockImplementation(
-    async (stateDir) => {
-      await closeAgents(stateDir);
-      cleanupOrder.push("database-close");
-      throw databaseFailure;
-    },
+    rejectAfterClose(closeAgents, cleanupOrder, "database-close", databaseFailure),
   );
   const closeShared = stateDatabase.closeOpenClawStateDatabaseAsync;
   const closeState = vi
     .spyOn(stateDatabase, "closeOpenClawStateDatabaseAsync")
-    .mockImplementation(async () => {
-      await closeShared();
-      cleanupOrder.push("state-close");
-      throw stateFailure;
-    });
-  vi.spyOn(workers, "createSqliteReadOnlyWorkerScope").mockImplementation((options) => {
-    const scope = createScope(options);
-    return {
-      run: scope.run.bind(scope),
-      close: async () => {
-        await scope.close();
-        cleanupOrder.push("scope-close");
-        throw scopeFailure;
-      },
-    };
-  });
+    .mockImplementation(rejectAfterClose(closeShared, cleanupOrder, "state-close", stateFailure));
+  observeWorkerClose((scope) =>
+    rejectAfterClose(() => scope.close(), cleanupOrder, "scope-close", scopeFailure)(),
+  );
   let home: string | undefined;
   try {
     await expect(

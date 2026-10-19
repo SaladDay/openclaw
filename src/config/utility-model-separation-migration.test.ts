@@ -34,19 +34,14 @@ describe("utility model separation migration", () => {
     "builtin-object",
     "small@q8_0",
     "small@20260101",
-  ])("preserves the previous implicit primary and unrelated config for %s", (kind) => {
-    const previous: OpenClawConfig = kind.startsWith("builtin")
-      ? {
-          agents: {
-            defaults: {
-              utilityModel:
-                kind === "builtin-object"
-                  ? { primary: "remote/utility", fallbacks: ["remote/backup"] }
-                  : "remote/utility",
-            },
-            entries: { worker: {} },
-          },
-        }
+  ])("pins the implicit primary for %s", (kind) => {
+    const builtin = kind.startsWith("builtin");
+    const utilityModel =
+      kind === "builtin-object"
+        ? { primary: "remote/utility", fallbacks: ["remote/backup"] }
+        : "remote/utility";
+    const previous: OpenClawConfig = builtin
+      ? { agents: { defaults: { utilityModel }, entries: { worker: {} } } }
       : legacyConfig();
     if (kind.startsWith("small@")) {
       expectDefined(previous.models?.providers?.["local-fixture"]?.models[0], "model").id = kind;
@@ -63,18 +58,16 @@ describe("utility model separation migration", () => {
       };
     } else if (kind === "candidate-marker") {
       next.meta = { migrations: { utilityModelSeparation: true } };
-    } else if (kind.startsWith("builtin")) {
+    } else if (builtin) {
       next.models = legacyConfig().models;
     }
     const { config, changes } = materializeUtilityModelSeparation(next, previous);
     expect(resolveUtilityModelSeparationError(config)).toBeUndefined();
+    const primary = builtin
+      ? `${DEFAULT_PROVIDER}/${DEFAULT_MODEL}`
+      : `local-fixture/${kind.startsWith("small@") ? kind : "small"}`;
     expect(config.agents?.defaults?.model).toEqual(
-      kind.startsWith("builtin")
-        ? { primary: `${DEFAULT_PROVIDER}/${DEFAULT_MODEL}` }
-        : {
-            primary: `local-fixture/${kind.startsWith("small@") ? kind : "small"}`,
-            fallbacks: ["backup/model@backup:account"],
-          },
+      builtin ? { primary } : { primary, fallbacks: ["backup/model@backup:account"] },
     );
     expect(config.agents?.defaults?.utilityModel).toBe(previous.agents?.defaults?.utilityModel);
     expect(config.agents?.defaults?.models).toEqual(previous.agents?.defaults?.models);
@@ -112,39 +105,36 @@ describe("utility model separation migration", () => {
     },
   );
 
-  it.each(["entries", "list"] as const)(
-    "preserves a per-agent implicit default in a %s roster without promoting disabled utilities",
-    (kind) => {
-      const agent = { utilityModel: "remote/utility", model: { fallbacks: ["backup/model"] } };
-      const config: OpenClawConfigWithLegacyRoster = {
-        agents:
-          kind === "entries"
-            ? { entries: { worker: agent, disabled: { utilityModel: "" } } }
-            : {
-                list: [
-                  { id: "worker", ...agent },
-                  { id: "disabled", utilityModel: "" },
-                ],
-              },
-      };
-      const migrated = materializeUtilityModelSeparation(config).config;
-      const worker =
-        kind === "entries" ? migrated.agents?.entries?.worker : migrated.agents?.list?.[0];
-      const disabled =
-        kind === "entries" ? migrated.agents?.entries?.disabled : migrated.agents?.list?.[1];
-      expect(worker?.model).toEqual({
-        primary: `${DEFAULT_PROVIDER}/${DEFAULT_MODEL}`,
-        fallbacks: ["backup/model"],
-      });
-      expect(disabled?.model).toBeUndefined();
-      expect(disabled?.utilityModel).toBe("");
-      expect(migrated.agents?.defaults?.model).toBeUndefined();
-    },
-  );
+  it.each(["entries", "list"] as const)("migrates enabled %s agents only", (kind) => {
+    const entries = {
+      worker: { utilityModel: "remote/utility", model: { fallbacks: ["backup/model"] } },
+      disabled: { utilityModel: "" },
+    };
+    const config: OpenClawConfigWithLegacyRoster = {
+      agents:
+        kind === "entries"
+          ? { entries }
+          : { list: Object.entries(entries).map(([id, agent]) => Object.assign({ id }, agent)) },
+    };
+    const migrated = materializeUtilityModelSeparation(config).config;
+    const worker =
+      kind === "entries" ? migrated.agents?.entries?.worker : migrated.agents?.list?.[0];
+    const disabled =
+      kind === "entries" ? migrated.agents?.entries?.disabled : migrated.agents?.list?.[1];
+    expect(worker?.model).toEqual({
+      primary: `${DEFAULT_PROVIDER}/${DEFAULT_MODEL}`,
+      fallbacks: ["backup/model"],
+    });
+    expect(disabled).toEqual(
+      kind === "list" ? { id: "disabled", utilityModel: "" } : { utilityModel: "" },
+    );
+    expect(migrated.agents?.defaults?.model).toBeUndefined();
+  });
 
   it.each(["empty-source", "converted", "explicit", "inherited", "agent", "replacement"])(
     "respects primary intent from %s",
     (scope) => {
+      const fresh = scope === "empty-source" || scope === "converted";
       let previous: OpenClawConfig = scope === "empty-source" ? {} : legacyConfig();
       if (scope === "converted") {
         previous = materializeUtilityModelSeparation(previous).config;
@@ -161,17 +151,14 @@ describe("utility model separation migration", () => {
         expectDefined(previous.agents?.entries?.worker, "worker").model =
           "chosen/model@chosen:profile";
       }
-      const next =
-        scope === "empty-source" || scope === "converted"
-          ? legacyConfig()
-          : structuredClone(previous);
+      const next = fresh ? legacyConfig() : structuredClone(previous);
       if (scope === "replacement") {
         expectDefined(next.agents?.defaults, "agent defaults").model =
           "chosen/model@chosen:profile";
       }
       const { config: migrated, changes } = materializeUtilityModelSeparation(next, previous);
       expect(hasUtilityModelSeparationMigrationMarker(migrated)).toBe(true);
-      if (scope === "empty-source" || scope === "converted") {
+      if (fresh) {
         expect(migrated.agents).toBe(next.agents);
         expect(changes).toEqual([]);
         return;

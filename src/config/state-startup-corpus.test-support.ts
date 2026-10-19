@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import type stateManifest from "../../test/fixtures/state-corpus/2026.9.2/manifest.json";
 import { createFixtureDiagnostics } from "../../test/helpers/fixture-diagnostics.js";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
 import { stateStartupCorpusTestFiles } from "../../test/vitest/vitest.startup-corpus-paths.mjs";
@@ -45,26 +46,7 @@ if (!bundledPluginsDir) {
   throw new Error("Missing bundled plugin fixtures for startup corpus");
 }
 
-type StateFixture = {
-  sessions: Array<{
-    agentId: string;
-    sessionKey: string;
-    sessionId: string;
-    transcriptText: string;
-  }>;
-  profiles: Record<string, Record<string, unknown>>;
-  cronJob: {
-    id: string;
-    name: string;
-    enabled: false;
-    schedule: { kind: "every"; everyMs: number };
-    sessionTarget: "main";
-    wakeMode: "next-heartbeat";
-    payload: { kind: "systemEvent"; text: string };
-  };
-  cronStorePath: string;
-  controlUi: { userId: string; settings: Record<string, unknown> };
-};
+type StateFixture = typeof stateManifest;
 
 const corpusDir = fileURLToPath(new URL("../../test/fixtures/state-corpus/", import.meta.url));
 const releases = fs
