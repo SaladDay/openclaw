@@ -72,18 +72,28 @@ describe("reportEmbeddedRunSuccessfulAuthBinding", () => {
     agentDir,
     modelBaseUrl: "https://api.openai.com/v1",
   };
-  const expectedBinding = {
-    authProfileId: "openai:work",
-    agentHarnessId: "codex",
-    modelId: "gpt-5.4",
-    modelApi: "openai-responses",
-    runtimeOwnerKind: "plugin-harness",
-    runtimeOwnerId: "codex",
-  };
+  function expectBinding(
+    attempt: Partial<typeof bindingInput.attempt>,
+    expected: Record<string, unknown>,
+  ) {
+    const onSuccessfulAuthBinding = vi.fn();
+    reportEmbeddedRunSuccessfulAuthBinding({
+      ...bindingInput,
+      attempt: { ...bindingInput.attempt, ...attempt },
+      onSuccessfulAuthBinding,
+    });
+    expect(onSuccessfulAuthBinding).toHaveBeenCalledWith({
+      authProfileId: "openai:work",
+      agentHarnessId: "codex",
+      modelId: "gpt-5.4",
+      modelApi: "openai-responses",
+      runtimeOwnerKind: "plugin-harness",
+      runtimeOwnerId: "codex",
+      ...expected,
+    });
+  }
 
-  afterEach(() => {
-    clearAllRuntimeAuthMaterializations();
-  });
+  afterEach(clearAllRuntimeAuthMaterializations);
 
   it("publishes an identical prepared API-key success only once", () => {
     const listener = vi.fn();
@@ -117,46 +127,36 @@ describe("reportEmbeddedRunSuccessfulAuthBinding", () => {
   });
 
   it("uses a harness-owned SecretRef fingerprint when the harness resolves it", () => {
-    const onSuccessfulAuthBinding = vi.fn();
-
-    reportEmbeddedRunSuccessfulAuthBinding({
-      ...bindingInput,
-      attempt: {
-        ...bindingInput.attempt,
-        authBindingFingerprint: "resolved-secretref-fingerprint",
-      },
-      onSuccessfulAuthBinding,
-    });
-
-    expect(onSuccessfulAuthBinding).toHaveBeenCalledWith({
-      ...expectedBinding,
-      authFingerprint: "resolved-secretref-fingerprint",
-    });
+    expectBinding(
+      { authBindingFingerprint: "resolved-secretref-fingerprint" },
+      { authFingerprint: "resolved-secretref-fingerprint" },
+    );
   });
 
   it("binds opaque harness auth to the exact captured runtime artifact", () => {
-    const onSuccessfulAuthBinding = vi.fn();
     const runtimeArtifact = {
       id: "codex-app-server:test",
       fingerprint: "codex-runtime-fingerprint",
     };
 
-    reportEmbeddedRunSuccessfulAuthBinding({
-      ...bindingInput,
-      attempt: { ...bindingInput.attempt, runtimeArtifact },
-      onSuccessfulAuthBinding,
-    });
-
-    expect(onSuccessfulAuthBinding).toHaveBeenCalledWith({
-      ...expectedBinding,
-      runtimeOwnerFingerprint: expect.any(String),
-      runtimeArtifactId: runtimeArtifact.id,
-      runtimeArtifactFingerprint: runtimeArtifact.fingerprint,
-    });
+    expectBinding(
+      { runtimeArtifact },
+      {
+        runtimeOwnerFingerprint: expect.any(String),
+        runtimeArtifactId: runtimeArtifact.id,
+        runtimeArtifactFingerprint: runtimeArtifact.fingerprint,
+      },
+    );
   });
 });
 
 it("retains bounded ordered delivery facts and source finality across generations", () => {
+  const delivered = {
+    didSendViaMessagingTool: true,
+    didSendDeterministicApprovalPrompt: true,
+    sourceReplyDelivered: true,
+    didDeliverSourceReplyViaMessageTool: true,
+  };
   const target = {
     tool: "message",
     provider: "telegram",
@@ -169,10 +169,7 @@ it("retains bounded ordered delivery facts and source finality across generation
   const progress = { text: "progress", idempotencyKey: "sent-progress", sourceReplyFinal: false };
   const previous = copyAttemptDeliveryState(
     makeAttemptResult({
-      didSendViaMessagingTool: true,
-      didSendDeterministicApprovalPrompt: true,
-      sourceReplyDelivered: true,
-      didDeliverSourceReplyViaMessageTool: true,
+      ...delivered,
       messagingToolSentTexts: Array.from({ length: 200 }, (_, index) => `earlier-${index}`),
       messagingToolSentTargets: [target, target],
       messagingToolSentMediaUrls: ["/tmp/first.png"],
@@ -195,10 +192,7 @@ it("retains bounded ordered delivery facts and source finality across generation
   expect(result.messagingToolSentTexts[0]).toBe("earlier-1");
   expect(result.messagingToolSentTexts.at(-1)).toBe("current");
   expect(result).toMatchObject({
-    didSendViaMessagingTool: true,
-    didSendDeterministicApprovalPrompt: true,
-    sourceReplyDelivered: true,
-    didDeliverSourceReplyViaMessageTool: true,
+    ...delivered,
     messagingToolSentTargets: [target, target, { ...target, text: "done", sourceReplyFinal: true }],
     messagingToolSentMediaUrls: ["/tmp/first.png", "/tmp/first.png"],
     messagingToolSourceReplyPayloads: [progress, completed],

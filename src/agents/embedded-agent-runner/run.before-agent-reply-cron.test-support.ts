@@ -1,5 +1,5 @@
-// Full-entry coverage for before_agent_reply hook handling before embedded attempts.
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import { captureGuardedFetchRequestAuthority } from "../../infra/net/fetch-request-authority.js";
@@ -18,13 +18,11 @@ import { loadSharedRunIntegrationHarness } from "./run.shared-integration-harnes
 let state: OpenClawTestState;
 let runEmbeddedAgent: Awaited<ReturnType<typeof loadSharedRunIntegrationHarness>>;
 
-function firstBeforeAgentReplyCall() {
-  const call = mockedGlobalHookRunner.runBeforeAgentReply.mock.calls[0];
-  if (!call) {
-    throw new Error("expected before_agent_reply hook call");
-  }
-  return call;
-}
+const firstBeforeAgentReplyCall = () =>
+  expectDefined(
+    mockedGlobalHookRunner.runBeforeAgentReply.mock.calls[0],
+    "before_agent_reply call",
+  );
 
 async function prepareHookSession(sessionKey: string) {
   const { replaceSessionEntry } = await import("../../config/sessions/session-accessor.js");
@@ -194,60 +192,56 @@ describe("runEmbeddedAgent before_agent_reply seam", () => {
     }
   });
 
-  it("rejects a reassigned cron root before the before-reply hook effect", async () => {
-    const params = await prepareHookSession("agent:main:cron:hook-rotation");
-    const { replaceSessionEntry } = await import("../../config/sessions/session-accessor.js");
-    const effect = vi.fn();
-    mockedGlobalHookRunner.runBeforeAgentReply.mockImplementation(async () => {
-      effect();
-      return { handled: true, reply: { text: "stale hook result" } };
-    });
-
-    await expect(
-      withBeforeAgentReplyObserver(
-        {
-          beforeDispatch: async () => {
-            await replaceSessionEntry(params.sessionTarget, {
-              sessionId: "replacement-cron-run",
-              lifecycleRevision: "replacement-cron-revision",
-              updatedAt: 2,
-            });
-          },
-          afterDispatch: async (result) => result,
-        },
-        () => runEmbeddedAgent(params),
-      ),
-    ).rejects.toThrow("The original session generation no longer accepts this delivery");
-
-    expect(effect).not.toHaveBeenCalled();
-    expect(mockedGlobalHookRunner.runBeforeAgentReply).not.toHaveBeenCalled();
-    expect(mockedRunEmbeddedAttempt).not.toHaveBeenCalled();
-  });
-
-  it("does not swallow cron-root revocation in a model-selection hook", async () => {
-    const params = await prepareHookSession("agent:main:cron:model-hook-rotation");
-    const { replaceSessionEntry } = await import("../../config/sessions/session-accessor.js");
-    const effect = vi.fn();
-    mockedGlobalHookRunner.hasHooks.mockImplementation(
-      (hookName: string) => hookName === "before_model_resolve",
-    );
-    mockedGlobalHookRunner.runBeforeModelResolve.mockImplementationOnce(async () => {
-      const assertRequestCurrent = captureGuardedFetchRequestAuthority();
-      await replaceSessionEntry(params.sessionTarget, {
-        sessionId: "replacement-model-run",
-        lifecycleRevision: "replacement-model-revision",
-        updatedAt: 2,
-      });
-      assertRequestCurrent?.();
-      effect();
-      return undefined;
-    });
-
-    await expect(runEmbeddedAgent(params)).rejects.toThrow(
-      "The original session generation no longer accepts this delivery",
-    );
-    expect(mockedGlobalHookRunner.runBeforeModelResolve).toHaveBeenCalledOnce();
-    expect(effect).not.toHaveBeenCalled();
-    expect(mockedRunEmbeddedAttempt).not.toHaveBeenCalled();
-  });
+  it.each(["before-reply", "model-selection"] as const)(
+    "rejects a reassigned cron root during %s without running effects",
+    async (phase) => {
+      const params = await prepareHookSession(`agent:main:cron:${phase}-rotation`);
+      const { replaceSessionEntry } = await import("../../config/sessions/session-accessor.js");
+      const effect = vi.fn();
+      const revoke = () =>
+        replaceSessionEntry(params.sessionTarget, {
+          sessionId: "replacement-cron-run",
+          lifecycleRevision: "replacement-cron-revision",
+          updatedAt: 2,
+        });
+      let run = () => runEmbeddedAgent(params);
+      if (phase === "before-reply") {
+        mockedGlobalHookRunner.runBeforeAgentReply.mockImplementation(async () => {
+          effect();
+          return { handled: true, reply: { text: "stale hook result" } };
+        });
+        run = () =>
+          withBeforeAgentReplyObserver(
+            {
+              beforeDispatch: async () => {
+                await revoke();
+              },
+              afterDispatch: async (result) => result,
+            },
+            () => runEmbeddedAgent(params),
+          );
+      } else {
+        mockedGlobalHookRunner.hasHooks.mockImplementation(
+          (hookName: string) => hookName === "before_model_resolve",
+        );
+        mockedGlobalHookRunner.runBeforeModelResolve.mockImplementationOnce(async () => {
+          const assertRequestCurrent = captureGuardedFetchRequestAuthority();
+          await revoke();
+          assertRequestCurrent?.();
+          effect();
+          return undefined;
+        });
+      }
+      await expect(run()).rejects.toThrow(
+        "The original session generation no longer accepts this delivery",
+      );
+      if (phase === "before-reply") {
+        expect(mockedGlobalHookRunner.runBeforeAgentReply).not.toHaveBeenCalled();
+      } else {
+        expect(mockedGlobalHookRunner.runBeforeModelResolve).toHaveBeenCalledOnce();
+      }
+      expect(effect).not.toHaveBeenCalled();
+      expect(mockedRunEmbeddedAttempt).not.toHaveBeenCalled();
+    },
+  );
 });

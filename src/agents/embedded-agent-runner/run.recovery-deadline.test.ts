@@ -107,17 +107,12 @@ describe("overflow recovery deadline ownership through the public runner", () =>
         markTimedOutDuringCompaction: () => {},
         markTimedOutByRunBudget: () => {},
       });
-      const response = setTimeout(
-        () =>
-          model.resolve(
-            makeAttemptResult({
-              sessionIdUsed: params.sessionId,
-              promptError: makeOverflowError(),
-              assistantTexts: [],
-            }),
-          ),
-        16_000,
-      );
+      const overflow = makeAttemptResult({
+        sessionIdUsed: params.sessionId,
+        promptError: makeOverflowError(),
+        assistantTexts: [],
+      });
+      const response = setTimeout(() => model.resolve(overflow), 16_000);
       attemptStarted.resolve();
       try {
         return await model.promise;
@@ -175,7 +170,7 @@ describe("overflow recovery deadline ownership through the public runner", () =>
     if (!("compactionTimeoutReset" in entered)) {
       throw new Error(`Recovery did not reach the native delegate: ${JSON.stringify(entered)}`);
     }
-    return { run, observed, compaction: entered };
+    return { observed, compaction: entered };
   }
 
   it("lets progressing recovery finish within the finite execution budget", async () => {
@@ -189,10 +184,7 @@ describe("overflow recovery deadline ownership through the public runner", () =>
       compaction.compactionTimeoutReset?.();
     }
     await vi.advanceTimersByTimeAsync(80_000);
-    expect(
-      settled ? await observed : undefined,
-      "per-request compaction progress remains valid within the execution budget",
-    ).toBeUndefined();
+    expect(settled ? await observed : undefined).toBeUndefined();
     expect(compaction.abortSignal?.aborted).toBe(false);
     releaseCompaction.resolve({
       ok: true,
@@ -210,10 +202,7 @@ describe("overflow recovery deadline ownership through the public runner", () =>
       compaction.compactionTimeoutReset?.();
     }
     await vi.advanceTimersByTimeAsync(110_000);
-    expect(
-      compaction.abortSignal?.aborted,
-      "execution deadline must reach the active recovery owner",
-    ).toBe(true);
+    expect(compaction.abortSignal?.aborted).toBe(true);
     const result = await observed;
     expect(result).toMatchObject({
       kind: "rejected",
@@ -230,8 +219,7 @@ describe("overflow recovery deadline ownership through the public runner", () =>
     await vi.advanceTimersByTimeAsync(180_000);
     expect(compaction.abortSignal?.aborted).toBe(true);
     releaseCompaction.resolve({ ok: false, compacted: false, reason: "Compaction timed out" });
-    const result = await observed;
-    expect(result).toMatchObject({
+    expect(await observed).toMatchObject({
       kind: "resolved",
       result: { meta: { error: { kind: "compaction_failure" } } },
     });

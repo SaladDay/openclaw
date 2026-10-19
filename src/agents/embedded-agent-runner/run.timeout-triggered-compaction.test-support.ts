@@ -116,8 +116,7 @@ describe("runEmbeddedAgent timeout recovery composition", () => {
       "Continue the current task from the existing transcript",
     );
     expect(mockedRunEmbeddedAttempt.mock.calls[1]?.[0]?.prompt).not.toBe(session.runParams.prompt);
-    const compactParams = mockedCompactDirect.mock.calls[0]?.[0] as CompactParams | undefined;
-    expect(compactParams).toMatchObject({
+    expect(mockedCompactDirect.mock.calls[0]?.[0]).toMatchObject({
       sessionId: session.runParams.sessionId,
       tokenBudget: 200_000,
       force: true,
@@ -155,14 +154,11 @@ describe("runEmbeddedAgent timeout recovery composition", () => {
     mockedCompactDirect.mockResolvedValueOnce(compacted());
     const defaultBuildRuntimePlan = mockedBuildAgentRuntimePlan.getMockImplementation();
     expect(defaultBuildRuntimePlan).toBeDefined();
-    let buildCalls = 0;
-    mockedBuildAgentRuntimePlan.mockImplementation(() => {
-      buildCalls += 1;
-      if (buildCalls === 2) {
+    mockedBuildAgentRuntimePlan
+      .mockImplementationOnce(defaultBuildRuntimePlan!)
+      .mockImplementationOnce(() => {
         throw preparationError;
-      }
-      return defaultBuildRuntimePlan!();
-    });
+      });
 
     await expect(runEmbeddedAgent(session.runParams)).rejects.toBe(preparationError);
 

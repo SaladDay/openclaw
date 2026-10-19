@@ -212,72 +212,74 @@ describe("normalizeEmbeddedRunAttempt", () => {
     expect(state.suppressNextUserMessagePersistence).toBe(true);
   });
 
-  it("invalidates carried context usage after handled mid-turn truncation", async () => {
-    const state = makePromptState();
-    const attempt = makeAttempt({
-      route: "truncate_tool_results_only",
-      source: "mid-turn",
-      handled: true,
-      truncatedCount: 2,
-    });
-    attempt.attemptUsage = { input: 2_000, output: 100, total: 2_100 };
-    const input = makeNormalizationInput(attempt, state);
-    input.lastRunPromptUsage = {
-      input: 42_000,
-      output: 1_000,
-      total: 43_000,
-      contextUsage: { state: "available", promptTokens: 42_000, totalTokens: 43_000 },
-    };
-
-    const result = await normalizeEmbeddedRunAttempt(input);
-
-    assert(result.action === "retry", `expected retry, got ${result.action}`);
-    expect(result.retryKind).toBe("recovery");
-    expect(state.markOwnedTranscriptRetry).toHaveBeenCalledOnce();
-    expect(state.continueFromCurrentTranscript).toHaveBeenCalledOnce();
-    expect(result.lastRunPromptUsage).toEqual({ contextUsage: { state: "unavailable" } });
-    const retryAttempt = makeAttempt(undefined, {
-      attemptUsage: {
-        input: 8_000,
-        output: 500,
-        total: 8_500,
-        contextUsage: { state: "available", promptTokens: 8_000, totalTokens: 8_500 },
-      },
-    });
-    const retryInput = makeNormalizationInput(retryAttempt, state);
-    retryInput.lastRunPromptUsage = result.lastRunPromptUsage;
-    expect(await normalizeEmbeddedRunAttempt(retryInput)).toMatchObject({
-      action: "proceed",
-      lastRunPromptUsage: retryAttempt.attemptUsage,
-    });
-    expect(toNormalizedUsage(input.usageAccumulator)).toMatchObject({
-      input: 2_000,
-      output: 100,
-      total: 2_100,
-    });
-  });
-
-  it("budgets a no-op mid-turn retry as progress after a successful tool", async () => {
-    const state = makePromptState();
-    const attempt = makeAttempt({
-      route: "truncate_tool_results_only",
-      source: "mid-turn",
-      handled: true,
-      truncatedCount: 0,
-    });
-    attempt.toolMetas = [{ toolName: "read", isError: false }];
-    const input = makeNormalizationInput(attempt, state);
-    input.lastRunPromptUsage = { input: 42_000, output: 1_000, total: 43_000 };
-    const result = await normalizeEmbeddedRunAttempt(input);
-    expect(result).toMatchObject({
-      action: "retry",
-      retryKind: "progress_continuation",
-    });
-    assert(result.action === "retry", `expected retry, got ${result.action}`);
-    expect(result.lastRunPromptUsage).toEqual(input.lastRunPromptUsage);
-    expect(state.markOwnedTranscriptRetry).not.toHaveBeenCalled();
-    expect(state.continueFromCurrentTranscript).toHaveBeenCalledOnce();
-  });
+  it.each([
+    ["mid-turn truncation", 2, "recovery", 1],
+    ["no-op after a successful tool", 0, "progress_continuation", 1],
+    ["compaction with current-attempt provenance", undefined, "recovery", 0],
+  ] as const)(
+    "preserves retry accounting for %s",
+    async (_name, truncatedCount, kind, continues) => {
+      const state = makePromptState();
+      const assistant = makeCliUsageAssistant("stop");
+      const attempt = makeAttempt(
+        {
+          route: continues ? "truncate_tool_results_only" : "compact_only",
+          handled: true,
+          ...(continues ? { source: "mid-turn" as const } : {}),
+          truncatedCount: truncatedCount ?? 0,
+        },
+        continues
+          ? truncatedCount
+            ? { attemptUsage: { input: 2_000, output: 100, total: 2_100 } }
+            : { toolMetas: [{ toolName: "read", isError: false }] }
+          : { ...withAssistant(assistant), messagesSnapshot: [assistant] as never },
+      );
+      const input = makeNormalizationInput(attempt, state);
+      const priorUsage = { input: 42_000, output: 1_000, total: 43_000 };
+      input.lastRunPromptUsage = truncatedCount
+        ? {
+            ...priorUsage,
+            contextUsage: { state: "available", promptTokens: 42_000, totalTokens: 43_000 },
+          }
+        : priorUsage;
+      const result = await normalizeEmbeddedRunAttempt(input);
+      assert(result.action === "retry", `expected retry, got ${result.action}`);
+      expect(result).toMatchObject({ retryKind: kind });
+      expect(state.continueFromCurrentTranscript).toHaveBeenCalledTimes(continues);
+      if (continues) {
+        expect(state.markOwnedTranscriptRetry).toHaveBeenCalledTimes(truncatedCount ? 1 : 0);
+      }
+      expect(result.lastRunPromptUsage).toEqual(
+        truncatedCount === 0
+          ? input.lastRunPromptUsage
+          : {
+              contextUsage: { state: "unavailable" },
+            },
+      );
+      if (!truncatedCount) {
+        return;
+      }
+      const retryAttempt = makeAttempt(undefined, {
+        attemptUsage: {
+          input: 8_000,
+          output: 500,
+          total: 8_500,
+          contextUsage: { state: "available", promptTokens: 8_000, totalTokens: 8_500 },
+        },
+      });
+      const retryInput = makeNormalizationInput(retryAttempt, state);
+      retryInput.lastRunPromptUsage = result.lastRunPromptUsage;
+      expect(await normalizeEmbeddedRunAttempt(retryInput)).toMatchObject({
+        action: "proceed",
+        lastRunPromptUsage: retryAttempt.attemptUsage,
+      });
+      expect(toNormalizedUsage(input.usageAccumulator)).toMatchObject({
+        input: 2_000,
+        output: 100,
+        total: 2_100,
+      });
+    },
+  );
 
   it("writes canonical assistant abort lifecycle metadata", async () => {
     const state = makePromptState();
@@ -298,20 +300,5 @@ describe("normalizeEmbeddedRunAttempt", () => {
       stopReason: "aborted",
       aborted: true,
     });
-  });
-
-  it("preserves current-attempt context provenance across a retry", async () => {
-    const assistant = makeCliUsageAssistant("stop");
-    const attempt = makeAttempt(
-      { route: "compact_only", handled: true, truncatedCount: 0 },
-      { ...withAssistant(assistant), messagesSnapshot: [assistant] as never },
-    );
-    const state = makePromptState();
-    const input = makeNormalizationInput(attempt, state);
-    input.lastRunPromptUsage = { input: 42_000, output: 1_000, total: 43_000 };
-    const result = await normalizeEmbeddedRunAttempt(input);
-    expect(state.continueFromCurrentTranscript).not.toHaveBeenCalled();
-    assert(result.action === "retry", `expected retry, got ${result.action}`);
-    expect(result.lastRunPromptUsage).toEqual({ contextUsage: { state: "unavailable" } });
   });
 });

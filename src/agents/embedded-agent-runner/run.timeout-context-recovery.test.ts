@@ -62,10 +62,8 @@ function makeInput(overrides: Partial<RecoveryInput> = {}): RecoveryInput {
     // Admission and writer fencing have composed coverage in run.compaction-runtime.test.ts.
     prepareRecoveryOwner: () => {
       const assertActive = composeSessionSourceAssertion([
-        () => {
-          input.runParams.abortSignal?.throwIfAborted();
-          input.assertRecoveryActive();
-        },
+        () => input.runParams.abortSignal?.throwIfAborted(),
+        input.assertRecoveryActive,
       ]);
       assertActive();
       const session = input.getActiveSession();
@@ -111,7 +109,6 @@ function makeInput(overrides: Partial<RecoveryInput> = {}): RecoveryInput {
       terminal: { kind: "timeout", phase: "prompt", source: "runtime" },
       sessionIdUsed: "session-1",
       assistantTexts: [],
-      messagesSnapshot: [],
     }),
     runtimeAuthPlan: { providerForAuth: "openai", authProfileProviderForAuth: "openai" },
     resolvedSessionKey: "agent:main:session-1",
