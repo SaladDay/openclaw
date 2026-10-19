@@ -17,7 +17,7 @@ import {
   prepareAgentRuntimeAuth,
   preparedAgentRuntimeProfileAttemptHasCandidate,
 } from "./prepare-auth.js";
-import { prepareAgentRuntimeAuthPlan, prepareAuthFixture } from "./prepare-auth.test-support.js";
+import { prepareAuthFixture as prepareFixture } from "./prepare-auth.test-support.js";
 
 // Provider-hook behavior is covered by its owner suites.
 vi.mock("../../plugins/provider-runtime.js", () => ({
@@ -49,6 +49,21 @@ function openAIConfig(config: Record<string, unknown>): OpenClawConfig {
 }
 
 const openAIAuthFixture = { provider: "openai", modelId: "gpt-5.5", env: {} } as const;
+
+type FixtureParams = Partial<Parameters<typeof prepareAgentRuntimeAuth>[0]> & {
+  profiles?: AuthProfileStore["profiles"];
+  order?: AuthProfileStore["order"];
+};
+function prepareAuthFixture({ profiles, order, ...params }: FixtureParams) {
+  return prepareFixture({
+    ...openAIAuthFixture,
+    ...(profiles ? { authProfileStore: authStore(profiles, order) } : {}),
+    ...params,
+  });
+}
+function prepareAgentRuntimeAuthPlan(params: FixtureParams) {
+  return prepareAuthFixture(params).plan;
+}
 
 const openAIPlatformAuthFixture = {
   ...openAIAuthFixture,
@@ -83,7 +98,7 @@ function openAITokenProfile(token: string, expires?: number) {
   };
 }
 
-function openAIOAuthProfile(access: string, refresh: string, expires: number) {
+function openAIOAuthProfile(access: string, refresh: string, expires = Date.now() + 60_000) {
   return { type: "oauth" as const, provider: "openai", access, refresh, expires };
 }
 
@@ -137,12 +152,12 @@ describe("prepareAgentRuntimeAuthPlan", () => {
       harnessRuntime: "codex",
       sessionAuthProfileId: "openai:shared",
       sessionAuthProfileSource: "user",
-      authProfileStore: authStore({
+      profiles: {
         "openai:shared": {
           ...createOAuthRefreshCredential(),
           authFlow: "chatgpt-token-sharing",
         },
-      }),
+      },
     });
     expect(plan).toMatchObject({
       forwardedAuthProfileId: "openai:shared",
@@ -199,11 +214,10 @@ describe("prepareAgentRuntimeAuthPlan", () => {
       modelBaseUrl: "https://api.arcee.ai/api/v1",
       config,
       metadataSnapshot,
-      env: {},
-      authProfileStore: authStore({
+      profiles: {
         "arcee:direct": createApiKeyCredential("arcee", "direct-model-key"),
         "openrouter:routed": createApiKeyCredential("openrouter", "router-model-key"),
-      }),
+      },
     });
 
     expect(plan.providerForAuth).toBe("arcee");
@@ -215,16 +229,13 @@ describe("prepareAgentRuntimeAuthPlan", () => {
     const plan = prepareAgentRuntimeAuthPlan({
       provider: "xai",
       modelId: "grok-4",
-      env: {},
       config: { auth: { profiles: { "xai:invalid": { provider: "xai", mode: "oauth" } } } },
-      authProfileStore: authStore(
-        {
-          "xai:invalid": createApiKeyCredential("xai", "invalid-key"),
-          "xai:p1": createApiKeyCredential("xai", "p1-key"),
-          "xai:p2": createApiKeyCredential("xai", "p2-key"),
-        },
-        { xai: ["xai:invalid", "xai:p1", "xai:p2"] },
-      ),
+      profiles: {
+        "xai:invalid": createApiKeyCredential("xai", "invalid-key"),
+        "xai:p1": createApiKeyCredential("xai", "p1-key"),
+        "xai:p2": createApiKeyCredential("xai", "p2-key"),
+      },
+      order: { xai: ["xai:invalid", "xai:p1", "xai:p2"] },
       resolveProviderPreferredProfileId: () => "xai:p2",
     });
 
@@ -250,7 +261,6 @@ describe("prepareAgentRuntimeAuthPlan", () => {
       prepareAgentRuntimeAuthPlan({
         provider: "xai",
         modelId: "grok-4",
-        env: {},
         authProfileStore: store,
         sessionAuthProfileId: "xai:p1",
         sessionAuthProfileSource: "auto",
@@ -266,10 +276,9 @@ describe("prepareAgentRuntimeAuthPlan", () => {
         config: {
           auth: { order: { xai: ["xai:missing"] } },
         } as OpenClawConfig,
-        env: {},
-        authProfileStore: authStore({
+        profiles: {
           "xai:backup": createApiKeyCredential("xai", "backup-key"),
-        }),
+        },
       }),
     ).toThrow(/explicit auth order.*no usable profiles/iu);
   });
@@ -289,14 +298,11 @@ describe("prepareAgentRuntimeAuthPlan", () => {
     const prepared = prepareAuthFixture({
       provider: "xai",
       modelId: "grok-4",
-      env: {},
-      authProfileStore: authStore(
-        {
-          [pendingProfileId]: pending,
-          [backupProfileId]: createApiKeyCredential("xai", "backup-key"),
-        },
-        { xai: [backupProfileId] },
-      ),
+      profiles: {
+        [pendingProfileId]: pending,
+        [backupProfileId]: createApiKeyCredential("xai", "backup-key"),
+      },
+      order: { xai: [backupProfileId] },
       sessionAuthProfileId: pendingProfileId,
       sessionAuthProfileSource: "user",
     });
@@ -314,7 +320,7 @@ describe("prepareAgentRuntimeAuthPlan", () => {
       harnessId: "codex",
       harnessRuntime: "codex",
       harnessAuthBootstrap: "harness",
-      authProfileStore: authStore({}),
+      profiles: {},
     });
 
     expect(plan.harnessAuthProvider).toBe("openai");
@@ -330,7 +336,7 @@ describe("prepareAgentRuntimeAuthPlan", () => {
   it("does not let clear OAuth auth hide a cooldown Platform tier before literal fallback", () => {
     const store = authStore(
       {
-        "openai:chatgpt": openAIOAuthProfile("oauth-access", "oauth-refresh", Date.now() + 60_000),
+        "openai:chatgpt": openAIOAuthProfile("oauth-access", "oauth-refresh"),
         "openai:platform": openAIApiKeyProfile("platform-key"),
       },
       { openai: ["openai:chatgpt", "openai:platform"] },
@@ -341,11 +347,8 @@ describe("prepareAgentRuntimeAuthPlan", () => {
 
     expect(() =>
       prepareAuthFixture({
-        provider: "openai",
-        modelId: "gpt-5.5",
         routeIntent: { authRequirement: "api-key", source: "explicit" },
         config: openAIConfig({ apiKey: "configured-platform-key" }),
-        env: {},
         authProfileStore: store,
       }),
     ).toThrow(
@@ -369,30 +372,28 @@ describe("prepareAgentRuntimeAuthPlan", () => {
       } as OpenClawConfig,
       harnessId: "codex",
       harnessRuntime: "codex",
-      authProfileStore: authStore(
-        {
-          "openai:invalid": {
-            type: "api_key",
-            provider: "openai",
-            keyRef: { source: "env", provider: "vault", id: "OPENAI_API_KEY" },
-          },
-          "openai:subscription-missing": {
-            type: "token",
-            provider: "openai",
-            tokenRef: { source: "file", provider: "vault", id: "/chatgpt/token" },
-          },
-          "openai:platform": openAIApiKeyProfile("platform-key"),
-          "openai:subscription-backup": openAITokenProfile("subscription-token"),
+      profiles: {
+        "openai:invalid": {
+          type: "api_key",
+          provider: "openai",
+          keyRef: { source: "env", provider: "vault", id: "OPENAI_API_KEY" },
         },
-        {
-          openai: [
-            "openai:invalid",
-            "openai:subscription-missing",
-            "openai:platform",
-            "openai:subscription-backup",
-          ],
+        "openai:subscription-missing": {
+          type: "token",
+          provider: "openai",
+          tokenRef: { source: "file", provider: "vault", id: "/chatgpt/token" },
         },
-      ),
+        "openai:platform": openAIApiKeyProfile("platform-key"),
+        "openai:subscription-backup": openAITokenProfile("subscription-token"),
+      },
+      order: {
+        openai: [
+          "openai:invalid",
+          "openai:subscription-missing",
+          "openai:platform",
+          "openai:subscription-backup",
+        ],
+      },
     });
 
     expect(preparation.plan.forwardedAuthProfileCandidateIds).toEqual([
@@ -415,16 +416,15 @@ describe("prepareAgentRuntimeAuthPlan", () => {
     expect(() =>
       prepareAgentRuntimeAuthPlan({
         ...openAIChatGptAuthFixture,
-        env: {},
         config: openAIConfig({
           api: "openai-chatgpt-responses",
           baseUrl: "https://chatgpt.com/backend-api/codex",
         }),
         sessionAuthProfileId: "openai:platform",
         sessionAuthProfileSource: "user",
-        authProfileStore: authStore({
+        profiles: {
           "openai:platform": openAIApiKeyProfile("platform-key"),
-        }),
+        },
       }),
     ).toThrow(/no route-compatible authentication source/iu);
   });
@@ -439,16 +439,10 @@ describe("prepareAgentRuntimeAuthPlan", () => {
           baseUrl: "https://api.openai.com/v1",
         }),
         env: { OPENAI_API_KEY: "ambient-platform-key" },
-        authProfileStore: authStore(
-          {
-            "openai:chatgpt": openAIOAuthProfile(
-              "subscription-token",
-              "refresh-token",
-              Date.now() + 60_000,
-            ),
-          },
-          { openai: ["openai:chatgpt"] },
-        ),
+        profiles: {
+          "openai:chatgpt": openAIOAuthProfile("subscription-token", "refresh-token"),
+        },
+        order: { openai: ["openai:chatgpt"] },
         sessionAuthProfileId: "openai:chatgpt",
         sessionAuthProfileSource: "auto",
         harnessId: "codex",
@@ -463,9 +457,9 @@ describe("prepareAgentRuntimeAuthPlan", () => {
     expect(() =>
       prepareAgentRuntimeAuthPlan({
         ...openAIPlatformAuthFixture,
-        authProfileStore: authStore({
+        profiles: {
           "openai:work": openAIApiKeyProfile("platform-key"),
-        }),
+        },
         sessionAuthProfileId: "openai:work",
         sessionAuthProfileSource: "user",
         harnessId: "codex",
@@ -480,10 +474,9 @@ describe("prepareAgentRuntimeAuthPlan", () => {
       provider: "xai",
       modelId: "grok-4",
       config: providerConfig("xai", { auth: "api-key", apiKey: "xai-key" }),
-      env: {},
-      authProfileStore: authStore({
+      profiles: {
         "xai:auto": createApiKeyCredential("xai", "profile-key"),
-      }),
+      },
       sessionAuthProfileId: "xai:auto",
       sessionAuthProfileSource: "auto",
       harnessId: "native-remote",
@@ -499,14 +492,11 @@ describe("prepareAgentRuntimeAuthPlan", () => {
     const plan = prepareAgentRuntimeAuthPlan({
       ...openAIPlatformAuthFixture,
       config: openAIConfig({ auth: "api-key", apiKey: "openai:bound" }),
-      env: {},
-      authProfileStore: authStore(
-        {
-          "openai:bound": openAITokenProfile("subscription-token", Date.now() + 60_000),
-          "openai:platform": openAIApiKeyProfile("platform-key"),
-        },
-        { openai: ["openai:platform", "openai:bound"] },
-      ),
+      profiles: {
+        "openai:bound": openAITokenProfile("subscription-token", Date.now() + 60_000),
+        "openai:platform": openAIApiKeyProfile("platform-key"),
+      },
+      order: { openai: ["openai:platform", "openai:bound"] },
     });
 
     expect(plan).toMatchObject({
@@ -527,16 +517,13 @@ describe("prepareAgentRuntimeAuthPlan", () => {
   ])("rejects a bound profile with conflicting $provider/$mode metadata", ({ mode, provider }) => {
     expect(() =>
       prepareAuthFixture({
-        provider: "openai",
-        modelId: "gpt-5.5",
         config: {
           auth: { profiles: { "openai:bound": { provider, mode } } },
           ...openAIConfig({ apiKey: "openai:bound" }),
         } as OpenClawConfig,
-        env: {},
-        authProfileStore: authStore({
+        profiles: {
           "openai:bound": openAIApiKeyProfile("bound-platform-key"),
-        }),
+        },
       }),
     ).toThrow(/no usable credentials/u);
   });
@@ -546,18 +533,11 @@ describe("prepareAgentRuntimeAuthPlan", () => {
       prepareAgentRuntimeAuthPlan({
         ...openAIPlatformAuthFixture,
         config: openAIConfig({ apiKey: "openai:oauth" }),
-        env: {},
-        authProfileStore: authStore(
-          {
-            "openai:oauth": openAIOAuthProfile(
-              "subscription-token",
-              "refresh-token",
-              Date.now() + 60_000,
-            ),
-            "openai:platform": openAIApiKeyProfile("platform-key"),
-          },
-          { openai: ["openai:platform"] },
-        ),
+        profiles: {
+          "openai:oauth": openAIOAuthProfile("subscription-token", "refresh-token"),
+          "openai:platform": openAIApiKeyProfile("platform-key"),
+        },
+        order: { openai: ["openai:platform"] },
       }),
     ).toThrow(/not a compatible bearer profile/u);
   });
@@ -566,10 +546,9 @@ describe("prepareAgentRuntimeAuthPlan", () => {
     const plan = prepareAgentRuntimeAuthPlan({
       ...openAIPlatformAuthFixture,
       config: openAIConfig({ auth: "aws-sdk", apiKey: "openai:bound" }),
-      env: {},
-      authProfileStore: authStore({
+      profiles: {
         "openai:bound": openAITokenProfile("subscription-token", Date.now() + 60_000),
-      }),
+      },
     });
 
     expect(plan.forwardedAuthProfileId).toBeUndefined();
@@ -591,7 +570,6 @@ describe("prepareAgentRuntimeAuthPlan", () => {
     const prepared = prepareAuthFixture({
       ...openAIChatGptAuthFixture,
       config,
-      env: {},
       authProfileStore: store,
     });
     const plan = prepared.plan;
@@ -668,10 +646,7 @@ describe("prepareAgentRuntimeAuthPlan", () => {
       { openai: ["openai:platform"] },
     );
     const prepared = prepareAuthFixture({
-      provider: "openai",
-      modelId: "gpt-5.5",
       config: openAIConfig({ apiKey: "configured-platform-key" }),
-      env: {},
       authProfileStore: store,
     });
     const profileAttempt = prepared.attempts[0];
@@ -724,8 +699,7 @@ describe("prepareAgentRuntimeAuthPlan", () => {
           },
         ],
       }),
-      env: {},
-      authProfileStore: authStore({}),
+      profiles: {},
     });
 
     expect(prepared.plan.credentialSource).toEqual({
@@ -738,14 +712,10 @@ describe("prepareAgentRuntimeAuthPlan", () => {
   it("does not queue ambient OAuth behind an incompatible Platform profile", () => {
     expect(() =>
       prepareAuthFixture({
-        provider: "openai",
-        modelId: "gpt-5.5",
         config: openAIConfig({ auth: "oauth" }),
         env: { OPENAI_API_KEY: "ambient-oauth-token" },
-        authProfileStore: authStore(
-          { "openai:platform": openAIApiKeyProfile("profile-platform-key") },
-          { openai: ["openai:platform"] },
-        ),
+        profiles: { "openai:platform": openAIApiKeyProfile("profile-platform-key") },
+        order: { openai: ["openai:platform"] },
       }),
     ).toThrow("Explicit auth order for openai has no usable profiles.");
   });
@@ -820,8 +790,7 @@ describe("prepareAgentRuntimeAuthPlan", () => {
           api: "openai-responses",
           baseUrl: "https://api.openai.com/v1",
         }),
-        env: {},
-        authProfileStore: authStore({}),
+        profiles: {},
       }),
     ).toThrow(/not compatible/u);
   });
@@ -833,7 +802,7 @@ describe("prepareAgentRuntimeAuthPlan", () => {
         OPENAI_API_KEY: "platform-key",
         OPENAI_BASE_URL: "https://relay.example.test/v1",
       },
-      authProfileStore: authStore({}),
+      profiles: {},
     });
 
     expect(plan.modelRoute).toEqual({
@@ -850,13 +819,11 @@ describe("prepareAgentRuntimeAuthPlan", () => {
   it("keeps same-provider retries behind a user-pinned virtual Codex profile", () => {
     const preparation = prepareAuthFixture({
       ...virtualCodexAuthFixture,
-      authProfileStore: authStore(
-        {
-          "openai:p1": openAITokenProfile("p1-token"),
-          "openai:p2": openAIApiKeyProfile("p2-key"),
-        },
-        { openai: ["openai:p2", "openai:p1"] },
-      ),
+      profiles: {
+        "openai:p1": openAITokenProfile("p1-token"),
+        "openai:p2": openAIApiKeyProfile("p2-key"),
+      },
+      order: { openai: ["openai:p2", "openai:p1"] },
       sessionAuthProfileId: "openai:p1",
       sessionAuthProfileSource: "user",
     });
@@ -881,7 +848,7 @@ describe("prepareAgentRuntimeAuthPlan", () => {
             baseUrl: "https://bedrock.example.test",
           }),
         },
-        authProfileStore: authStore({}),
+        profiles: {},
         sessionAuthProfileId: profileId,
         sessionAuthProfileSource: "user",
       }),
@@ -899,7 +866,7 @@ describe("prepareAgentRuntimeAuthPlan", () => {
             },
           },
         } as OpenClawConfig,
-        authProfileStore: authStore({}),
+        profiles: {},
         sessionAuthProfileId: "openai:missing",
         sessionAuthProfileSource: "user",
       }),
@@ -914,10 +881,8 @@ describe("prepareAgentRuntimeAuthPlan", () => {
 
   it("does not reuse a routed plan across compaction model overrides", () => {
     const plan = prepareAgentRuntimeAuthPlan({
-      provider: "openai",
-      modelId: "gpt-5.5",
       env: { OPENAI_API_KEY: "platform-key" },
-      authProfileStore: authStore({}),
+      profiles: {},
     });
 
     expect(
