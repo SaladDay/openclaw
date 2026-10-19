@@ -1,5 +1,5 @@
 import type { MusicGenerationRequest } from "openclaw/plugin-sdk/music-generation";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   expectAllowPrivateNetworkPolicy,
   expectMinimaxGuardedFetchCall,
@@ -25,6 +25,7 @@ beforeAll(async () => {
 });
 
 installMinimaxProviderHttpMockCleanup();
+afterEach(() => vi.useRealTimers());
 
 function musicRequest(overrides: Partial<MusicGenerationRequest> = {}): MusicGenerationRequest {
   return {
@@ -90,6 +91,7 @@ describe("minimax music generation provider", () => {
   );
 
   it("streams generated music chunks from MiniMax", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
     const chunkA = Buffer.from("ID3\x04\x00mp3-a");
     const chunkB = Buffer.from("mp3-b");
     postJsonRequestMock.mockResolvedValue({
