@@ -85,12 +85,7 @@ function makeInput(overrides: Partial<RecoveryInput> = {}): RecoveryInput {
         },
       };
     },
-    prepareRecoverySession: async () => ({
-      sessionManager: undefined,
-      assertActive: composeSessionSourceAssertion([]),
-      withSessionManagerRewriteLock: async <T>(operation: () => Promise<T> | T) =>
-        await operation(),
-    }),
+    prepareRecoverySession: vi.fn<RecoveryInput["prepareRecoverySession"]>(),
     contextEngine: {
       info: { id: "legacy", name: "Legacy" },
       ingest: vi.fn(),
@@ -221,9 +216,7 @@ describe("timeout recovery", () => {
       }),
     ).toBe(true);
     const input = makeInput({
-      runOwnsCompactionAfterHook: vi.fn(async () => {
-        throw new Error("after-hook failed");
-      }),
+      runOwnsCompactionAfterHook: vi.fn().mockRejectedValue(new Error("after-hook failed")),
     });
     await expect(recoverEmbeddedRunTimeout(input)).rejects.toThrow("after-hook failed");
     expect(resolveEmbeddedRunAbandonment({ sessionId: "session-1" })).toBe("timeout");
@@ -349,16 +342,9 @@ describe("timeout recovery", () => {
     const successor = createEmbeddedRunHandle({
       runId: "run-successor",
       queueMessage,
+      guarded: true,
       supportsTranscriptCommitWait: true,
     });
-    successor.messageInjectionV2 = {
-      version: 2,
-      isAvailable: () => true,
-      queueMessage: async (_text, _options, assertCurrent) => {
-        assertCurrent();
-        await queueMessage();
-      },
-    };
     const successorDelivery = withSessionTurn(
       { sessionKey, sessionId, target },
       async (operation) => {

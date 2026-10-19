@@ -111,10 +111,8 @@ describe("runEmbeddedAgent timeout recovery composition", () => {
       sessionId: successor.sessionId,
       sessionFile: successor.sessionKey,
       sessionTarget: successor,
+      prompt: expect.stringContaining("Continue the current task from the existing transcript"),
     });
-    expect(mockedRunEmbeddedAttempt.mock.calls[1]?.[0]?.prompt).toContain(
-      "Continue the current task from the existing transcript",
-    );
     expect(mockedRunEmbeddedAttempt.mock.calls[1]?.[0]?.prompt).not.toBe(session.runParams.prompt);
     expect(mockedCompactDirect.mock.calls[0]?.[0]).toMatchObject({
       sessionId: session.runParams.sessionId,

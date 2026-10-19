@@ -8,7 +8,7 @@ import { readClaimingHookAdmission } from "../../plugins/hook-claim-admission.js
 import type { OpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { makeAttemptResult } from "./run.overflow-compaction.fixture.js";
 import {
-  mockedGlobalHookRunner,
+  mockedGlobalHookRunner as hooks,
   mockedRunEmbeddedAttempt,
   createOverflowRunParams,
   resetSharedRunIntegrationHarnessMocks,
@@ -19,10 +19,8 @@ let state: OpenClawTestState;
 let runEmbeddedAgent: Awaited<ReturnType<typeof loadSharedRunIntegrationHarness>>;
 
 const firstBeforeAgentReplyCall = () =>
-  expectDefined(
-    mockedGlobalHookRunner.runBeforeAgentReply.mock.calls[0],
-    "before_agent_reply call",
-  );
+  expectDefined(hooks.runBeforeAgentReply.mock.calls[0], "before_agent_reply call");
+const handledReply = (text: string) => ({ handled: true, reply: { text } });
 
 async function prepareHookSession(sessionKey: string) {
   const { replaceSessionEntry } = await import("../../config/sessions/session-accessor.js");
@@ -58,20 +56,13 @@ describe("runEmbeddedAgent before_agent_reply seam", () => {
     state = await createOpenClawTestState({ label: "run.before-agent-reply-cron" });
     const { setRuntimeConfigSnapshot } = await import("../../config/runtime-snapshot.js");
     setRuntimeConfigSnapshot({});
-    mockedGlobalHookRunner.hasHooks.mockImplementation(
-      (hookName: string) => hookName === "before_agent_reply",
-    );
+    hooks.hasHooks.mockImplementation((hookName: string) => hookName === "before_agent_reply");
   });
 
-  afterEach(async () => {
-    await state?.cleanup();
-  });
+  afterEach(() => state?.cleanup());
 
   it("lets before_agent_reply claim cron runs before the embedded attempt starts", async () => {
-    mockedGlobalHookRunner.runBeforeAgentReply.mockResolvedValue({
-      handled: true,
-      reply: { text: "dreaming claimed" },
-    });
+    hooks.runBeforeAgentReply.mockResolvedValue(handledReply("dreaming claimed"));
     const onExecutionPhase = vi.fn();
 
     const result = await runEmbeddedAgent({
@@ -82,7 +73,7 @@ describe("runEmbeddedAgent before_agent_reply seam", () => {
       onExecutionPhase,
     });
 
-    expect(mockedGlobalHookRunner.runBeforeAgentReply).toHaveBeenCalledTimes(1);
+    expect(hooks.runBeforeAgentReply).toHaveBeenCalledTimes(1);
     expect(onExecutionPhase).toHaveBeenCalledWith(
       expect.objectContaining({ phase: "before_agent_reply" }),
     );
@@ -110,7 +101,6 @@ describe("runEmbeddedAgent before_agent_reply seam", () => {
   });
 
   it("passes the heartbeat queue and re-arms setup progress when its hook does not claim", async () => {
-    mockedGlobalHookRunner.runBeforeAgentReply.mockResolvedValue(undefined);
     mockedRunEmbeddedAttempt.mockResolvedValueOnce(makeAttemptResult());
     const onExecutionPhase = vi.fn();
 
@@ -143,7 +133,7 @@ describe("runEmbeddedAgent before_agent_reply seam", () => {
     let requestAuthority: (() => void) | undefined;
     let claimAuthority: (() => void) | undefined;
     const effect = vi.fn();
-    mockedGlobalHookRunner.runBeforeAgentReply.mockImplementation(async (_event, context) => {
+    hooks.runBeforeAgentReply.mockImplementation(async (_event, context) => {
       requestAuthority = captureGuardedFetchRequestAuthority();
       claimAuthority = readClaimingHookAdmission(context)?.assertCurrent;
       expect(requestAuthority).toBeTypeOf("function");
@@ -151,7 +141,7 @@ describe("runEmbeddedAgent before_agent_reply seam", () => {
       requestAuthority?.();
       claimAuthority?.();
       effect();
-      return { handled: true, reply: { text: "hook completed" } };
+      return handledReply("hook completed");
     });
 
     const result = await runEmbeddedAgent(params);
@@ -180,11 +170,11 @@ describe("runEmbeddedAgent before_agent_reply seam", () => {
     void pending.catch(() => {});
     try {
       await awaitGateBeforeSettlement(entered.promise, pending, "Reply bypassed attribution");
-      expect(mockedGlobalHookRunner.runBeforeAgentReply).not.toHaveBeenCalled();
+      expect(hooks.runBeforeAgentReply).not.toHaveBeenCalled();
       controller.abort(failure);
       baseline.resolve();
       await expect(pending).rejects.toBe(failure);
-      expect(mockedGlobalHookRunner.runBeforeAgentReply).not.toHaveBeenCalled();
+      expect(hooks.runBeforeAgentReply).not.toHaveBeenCalled();
       expect(mockedRunEmbeddedAttempt).not.toHaveBeenCalled();
     } finally {
       baseline.resolve();
@@ -206,25 +196,23 @@ describe("runEmbeddedAgent before_agent_reply seam", () => {
         });
       let run = () => runEmbeddedAgent(params);
       if (phase === "before-reply") {
-        mockedGlobalHookRunner.runBeforeAgentReply.mockImplementation(async () => {
+        hooks.runBeforeAgentReply.mockImplementation(async () => {
           effect();
-          return { handled: true, reply: { text: "stale hook result" } };
+          return handledReply("stale hook result");
         });
         run = () =>
           withBeforeAgentReplyObserver(
             {
-              beforeDispatch: async () => {
-                await revoke();
-              },
+              beforeDispatch: () => revoke().then(() => undefined),
               afterDispatch: async (result) => result,
             },
             () => runEmbeddedAgent(params),
           );
       } else {
-        mockedGlobalHookRunner.hasHooks.mockImplementation(
+        hooks.hasHooks.mockImplementation(
           (hookName: string) => hookName === "before_model_resolve",
         );
-        mockedGlobalHookRunner.runBeforeModelResolve.mockImplementationOnce(async () => {
+        hooks.runBeforeModelResolve.mockImplementationOnce(async () => {
           const assertRequestCurrent = captureGuardedFetchRequestAuthority();
           await revoke();
           assertRequestCurrent?.();
@@ -236,9 +224,9 @@ describe("runEmbeddedAgent before_agent_reply seam", () => {
         "The original session generation no longer accepts this delivery",
       );
       if (phase === "before-reply") {
-        expect(mockedGlobalHookRunner.runBeforeAgentReply).not.toHaveBeenCalled();
+        expect(hooks.runBeforeAgentReply).not.toHaveBeenCalled();
       } else {
-        expect(mockedGlobalHookRunner.runBeforeModelResolve).toHaveBeenCalledOnce();
+        expect(hooks.runBeforeModelResolve).toHaveBeenCalledOnce();
       }
       expect(effect).not.toHaveBeenCalled();
       expect(mockedRunEmbeddedAttempt).not.toHaveBeenCalled();

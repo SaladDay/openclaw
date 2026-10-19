@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import { makeEmbeddedRunnerAttempt } from "../test-helpers/embedded-agent-runner-e2e-fixtures.js";
+import {
+  createMockUsage,
+  makeEmbeddedRunnerAttempt,
+} from "../test-helpers/embedded-agent-runner-e2e-fixtures.js";
 import { createEmbeddedRunReplayState } from "./replay-state.js";
 import { normalizeEmbeddedRunAttempt } from "./run/attempt-normalization.js";
 import { createEmbeddedRunContextRecoveryState } from "./run/context-recovery-state.js";
@@ -33,23 +36,15 @@ function makeCliUsageAssistant(stopReason: "aborted" | "error" | "stop", text = 
   };
 }
 
-function makePromptState(options: { waitForPersistence?: () => Promise<void> } = {}) {
+function makePromptState(waitForPersistence = async () => {}) {
   const activePrompt = { persisted: false, internal: false };
   return {
     sessionId: "session-1",
     sessionFile: "agent:main:main",
-    sessionTarget: {
-      agentId: "main",
-      sessionId: "session-1",
-      sessionKey: "agent:main:main",
-      storePath: "/tmp/sessions.json",
-    },
     activePrompt,
     suppressNextUserMessagePersistence: false,
     adoptSessionId: vi.fn(),
-    waitForCurrentUserMessagePersistence: vi.fn(
-      options.waitForPersistence ?? (async () => undefined),
-    ),
+    waitForCurrentUserMessagePersistence: vi.fn(waitForPersistence),
     markOwnedTranscriptRetry: vi.fn(),
     continueFromCurrentTranscript: vi.fn(),
   };
@@ -57,13 +52,12 @@ function makePromptState(options: { waitForPersistence?: () => Promise<void> } =
 
 function makeNormalizationInput(
   attempt: EmbeddedRunAttemptResult,
-  sessionPromptState: ReturnType<typeof makePromptState>,
+  sessionPromptState = makePromptState(),
 ): Parameters<typeof normalizeEmbeddedRunAttempt>[0] {
   return {
     runInput: {
       runParams: {
         sessionId: "session-1",
-        sessionFile: "agent:main:main",
         config: {},
       },
       laneController: { throwIfAborted: vi.fn() },
@@ -74,12 +68,7 @@ function makeNormalizationInput(
     preparedRuntime: {
       nativeModelOwned: false,
       model: { id: "gpt-5.6-luna" },
-      attemptAuthProfileStore: { profiles: {} },
-      snapshot: () => ({
-        effectiveModel: { provider: "openai", id: "gpt-5.6-luna" },
-        outerContextTokenMeta: {},
-        lastProfileId: undefined,
-      }),
+      snapshot: () => ({}),
     } as never,
     dispatchedAttempt: { rawAttempt: attempt } as never,
     sessionPromptState: sessionPromptState as never,
@@ -145,7 +134,7 @@ describe("normalizeEmbeddedRunAttempt", () => {
       terminal: { kind: "timeout" as const, phase: "prompt" as const, source: "idle" as const },
       attemptUsage: { output: 36 },
     };
-    const input = makeNormalizationInput(attempt, makePromptState());
+    const input = makeNormalizationInput(attempt);
     let result: Awaited<ReturnType<typeof normalizeEmbeddedRunAttempt>> | undefined;
     for (let index = 0; index < MAX_CONSECUTIVE_IDLE_TIMEOUTS_BEFORE_OUTPUT; index += 1) {
       result = await normalizeEmbeddedRunAttempt(input);
@@ -159,20 +148,13 @@ describe("normalizeEmbeddedRunAttempt", () => {
     const assistant = {
       ...makeCliUsageAssistant("stop"),
       api: "openai-chatgpt-responses",
-      usage: {
-        input: 150_000,
-        output: 100,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalTokens: 150_100,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-      },
+      usage: createMockUsage(150_000, 100),
     };
     const attempt = makeAttempt(undefined, {
       ...withAssistant(assistant),
       attemptUsage: { input: 300_000, output: 200, cost: { total: 0.125 } },
     });
-    const input = makeNormalizationInput(attempt, makePromptState());
+    const input = makeNormalizationInput(attempt);
 
     await normalizeEmbeddedRunAttempt(input);
 
@@ -185,11 +167,9 @@ describe("normalizeEmbeddedRunAttempt", () => {
 
   it("waits for pending user-turn persistence before deriving retry suppression", async () => {
     const persistence = createDeferred();
-    const state = makePromptState({
-      waitForPersistence: async () => {
-        await persistence.promise;
-        state.activePrompt.persisted = true;
-      },
+    const state = makePromptState(async () => {
+      await persistence.promise;
+      state.activePrompt.persisted = true;
     });
     let settled = false;
 
@@ -282,7 +262,6 @@ describe("normalizeEmbeddedRunAttempt", () => {
   );
 
   it("writes canonical assistant abort lifecycle metadata", async () => {
-    const state = makePromptState();
     const assistant = makeCliUsageAssistant("aborted", "");
     const setTerminalLifecycleMeta = vi.fn();
     const attempt = makeAttempt(undefined, {
@@ -290,7 +269,7 @@ describe("normalizeEmbeddedRunAttempt", () => {
       setTerminalLifecycleMeta,
     });
 
-    const result = await normalizeEmbeddedRunAttempt(makeNormalizationInput(attempt, state));
+    const result = await normalizeEmbeddedRunAttempt(makeNormalizationInput(attempt));
 
     assert(result.action === "proceed", `expected proceed, got ${result.action}`);
     result.setTerminalLifecycleMeta({ replayInvalid: false, livenessState: "blocked" });

@@ -141,7 +141,7 @@ describe("overflow recovery deadline ownership through the public runner", () =>
   });
   afterAll(cleanupSharedRunIntegrationSessions);
 
-  async function start() {
+  async function start(progressRequests = 0) {
     const workspaceDir = tempDirs.make("openclaw-recovery-deadline-");
     const sessionManager = SessionManager.inMemory(workspaceDir);
     const config: OpenClawConfig = {
@@ -170,19 +170,19 @@ describe("overflow recovery deadline ownership through the public runner", () =>
     if (!("compactionTimeoutReset" in entered)) {
       throw new Error(`Recovery did not reach the native delegate: ${JSON.stringify(entered)}`);
     }
+    for (let request = 0; request < progressRequests; request += 1) {
+      await vi.advanceTimersByTimeAsync(100_000);
+      entered.compactionTimeoutReset?.();
+    }
     return { observed, compaction: entered };
   }
 
   it("lets progressing recovery finish within the finite execution budget", async () => {
-    const { observed, compaction } = await start();
+    const { observed, compaction } = await start(4);
     let settled = false;
     void observed.then(() => {
       settled = true;
     });
-    for (let request = 0; request < 4; request += 1) {
-      await vi.advanceTimersByTimeAsync(100_000);
-      compaction.compactionTimeoutReset?.();
-    }
     await vi.advanceTimersByTimeAsync(80_000);
     expect(settled ? await observed : undefined).toBeUndefined();
     expect(compaction.abortSignal?.aborted).toBe(false);
@@ -196,11 +196,7 @@ describe("overflow recovery deadline ownership through the public runner", () =>
   });
 
   it("propagates the detached execution deadline despite per-request progress", async () => {
-    const { observed, compaction } = await start();
-    for (let request = 0; request < 7; request += 1) {
-      await vi.advanceTimersByTimeAsync(100_000);
-      compaction.compactionTimeoutReset?.();
-    }
+    const { observed, compaction } = await start(7);
     await vi.advanceTimersByTimeAsync(110_000);
     expect(compaction.abortSignal?.aborted).toBe(true);
     const result = await observed;

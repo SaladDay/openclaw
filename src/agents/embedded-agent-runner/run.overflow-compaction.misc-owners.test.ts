@@ -72,27 +72,6 @@ describe("reportEmbeddedRunSuccessfulAuthBinding", () => {
     agentDir,
     modelBaseUrl: "https://api.openai.com/v1",
   };
-  function expectBinding(
-    attempt: Partial<typeof bindingInput.attempt>,
-    expected: Record<string, unknown>,
-  ) {
-    const onSuccessfulAuthBinding = vi.fn();
-    reportEmbeddedRunSuccessfulAuthBinding({
-      ...bindingInput,
-      attempt: { ...bindingInput.attempt, ...attempt },
-      onSuccessfulAuthBinding,
-    });
-    expect(onSuccessfulAuthBinding).toHaveBeenCalledWith({
-      authProfileId: "openai:work",
-      agentHarnessId: "codex",
-      modelId: "gpt-5.4",
-      modelApi: "openai-responses",
-      runtimeOwnerKind: "plugin-harness",
-      runtimeOwnerId: "codex",
-      ...expected,
-    });
-  }
-
   afterEach(clearAllRuntimeAuthMaterializations);
 
   it("publishes an identical prepared API-key success only once", () => {
@@ -126,27 +105,33 @@ describe("reportEmbeddedRunSuccessfulAuthBinding", () => {
     expect(getPreparedRuntimeAuthMaterializations(agentDir)).toEqual([]);
   });
 
-  it("uses a harness-owned SecretRef fingerprint when the harness resolves it", () => {
-    expectBinding(
-      { authBindingFingerprint: "resolved-secretref-fingerprint" },
-      { authFingerprint: "resolved-secretref-fingerprint" },
-    );
-  });
-
-  it("binds opaque harness auth to the exact captured runtime artifact", () => {
-    const runtimeArtifact = {
-      id: "codex-app-server:test",
-      fingerprint: "codex-runtime-fingerprint",
-    };
-
-    expectBinding(
-      { runtimeArtifact },
+  it.each([
+    ["SecretRef", { authBindingFingerprint: "resolved" }, { authFingerprint: "resolved" }],
+    [
+      "opaque runtime",
+      { runtimeArtifact: { id: "runtime", fingerprint: "captured" } },
       {
         runtimeOwnerFingerprint: expect.any(String),
-        runtimeArtifactId: runtimeArtifact.id,
-        runtimeArtifactFingerprint: runtimeArtifact.fingerprint,
+        runtimeArtifactId: "runtime",
+        runtimeArtifactFingerprint: "captured",
       },
-    );
+    ],
+  ] as const)("reports exact %s binding provenance", (_name, attempt, expected) => {
+    const onSuccessfulAuthBinding = vi.fn();
+    reportEmbeddedRunSuccessfulAuthBinding({
+      ...bindingInput,
+      attempt: { ...bindingInput.attempt, ...attempt },
+      onSuccessfulAuthBinding,
+    });
+    expect(onSuccessfulAuthBinding).toHaveBeenCalledWith({
+      authProfileId: "openai:work",
+      agentHarnessId: "codex",
+      modelId: "gpt-5.4",
+      modelApi: "openai-responses",
+      runtimeOwnerKind: "plugin-harness",
+      runtimeOwnerId: "codex",
+      ...expected,
+    });
   });
 });
 

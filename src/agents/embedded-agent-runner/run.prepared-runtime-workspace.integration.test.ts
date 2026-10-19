@@ -98,7 +98,7 @@ it("admits a second workspace turn through real prepared runtime after registrat
           `
 module.exports = { id: ${JSON.stringify(pluginId)}, register(api) {
   const bridge = globalThis[${JSON.stringify(bridgeKey)}];
-  const registration = bridge.capture(api.registrationMode);
+  const registration = bridge.capture();
   api.lifecycle.registerRuntimeLifecycle({ id: "fixture", dispose() { registration.disposals++; } });
   ${
     pluginId === siblingPluginId
@@ -111,9 +111,7 @@ module.exports = { id: ${JSON.stringify(pluginId)}, register(api) {
       }
       const config: OpenClawConfig = {
         agents: {
-          entries: {
-            main: { agentDir: state.agentDir(), workspace: state.workspaceDir },
-          },
+          entries: { main: { agentDir: state.agentDir(), workspace: state.workspaceDir } },
           defaults: { workspace: state.workspaceDir, model: "anthropic/claude-opus-5" },
         },
         models: {
@@ -124,13 +122,7 @@ module.exports = { id: ${JSON.stringify(pluginId)}, register(api) {
               auth: "api-key",
               apiKey: "synthetic-workspace-key",
               baseUrl: "https://api.anthropic.com",
-              models: [
-                completionModelDefinition({
-                  id: "claude-opus-5",
-                  name: "Scripted Claude",
-                  contextWindow: 200_000,
-                }),
-              ],
+              models: [completionModelDefinition({ id: "claude-opus-5", contextWindow: 200_000 })],
             },
           },
         },
@@ -151,7 +143,6 @@ module.exports = { id: ${JSON.stringify(pluginId)}, register(api) {
           await resetPreparedModelRuntimeSnapshotsForTest();
           clearPluginMetadataLifecycleCaches();
           setRuntimeConfigSnapshot(config);
-          const errors: unknown[] = [];
           try {
             for (const [index, rule] of [
               "Original workspace instruction.",
@@ -190,14 +181,11 @@ module.exports = { id: ${JSON.stringify(pluginId)}, register(api) {
                   cleanupBundleMcpOnRunEnd: true,
                   timeoutMs: 30_000,
                 });
-                errors.push(result.meta.error);
-              } catch (reason) {
-                errors.push(String(reason));
+                expect(result.meta.error).toBeUndefined();
               } finally {
                 admission.close();
               }
             }
-            expect(errors).toEqual([undefined, undefined]);
             expect(network).not.toHaveBeenCalled();
             const siblingRegistrations = registrations
               .filter(({ owner }) => owner.record.id === siblingPluginId)
