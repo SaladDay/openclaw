@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginManifestRecord, PluginManifestRegistry } from "../plugins/manifest-registry.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
+import { createPluginManifestRecordFixture as plugin } from "../plugins/plugin-metadata.test-support.js";
 import {
   validateConfigObjectRawWithPlugins,
   validateConfigObjectWithPlugins,
@@ -10,25 +11,20 @@ const mockLoadPluginManifestRegistry = vi.hoisted(() =>
   vi.fn((): PluginManifestRegistry => ({ diagnostics: [], plugins: [] })),
 );
 
-function plugin(
-  overrides: Partial<PluginManifestRecord> & Pick<PluginManifestRecord, "id">,
-): PluginManifestRecord {
-  return {
-    channels: [],
-    cliBackends: [],
-    hooks: [],
-    origin: "bundled",
-    providers: [],
-    skills: [],
-    manifestPath: "/tmp/" + overrides.id + "/openclaw.plugin.json",
-    rootDir: "/tmp/" + overrides.id,
-    source: "/tmp/" + overrides.id + "/index.js",
-    ...overrides,
-  };
-}
-
 function registry(...plugins: PluginManifestRecord[]): PluginManifestRegistry {
   return { diagnostics: [], plugins };
+}
+
+function install(...plugins: PluginManifestRecord[]) {
+  mockLoadPluginManifestRegistry.mockReturnValue(registry(...plugins));
+}
+
+function validatedConfig(result: ReturnType<typeof validateConfigObjectWithPlugins>) {
+  expect(result.ok).toBe(true);
+  if (!result.ok) {
+    throw new Error("Expected valid config");
+  }
+  return result.config;
 }
 
 function accountSchema() {
@@ -131,83 +127,66 @@ describe("config validation metadata", () => {
     };
     const original = structuredClone(source);
     const cost = { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0.2 };
-    mockLoadPluginManifestRegistry.mockReturnValue(
-      registry(
-        plugin({
-          id: "fixture",
-          providers: ["fixture"],
-          modelCatalog: {
-            providers: {
-              fixture: {
-                models: [
-                  {
-                    id: "vision-model",
-                    name: "Catalog model",
-                    reasoning: true,
-                    input: ["text", "image"],
-                    cost,
-                    contextWindow: 128_000,
-                    maxTokens: 16_000,
-                  },
-                ],
-              },
-            },
-          },
-        }),
-      ),
+    const catalogModel = {
+      id: "vision-model",
+      name: "Catalog model",
+      reasoning: true,
+      input: ["text" as const, "image" as const],
+      cost,
+      contextWindow: 128_000,
+      maxTokens: 16_000,
+    };
+    const expectedModel = {
+      ...structuredClone(catalogModel),
+      name: "Authored model",
+      contextWindow: 64_000,
+    };
+    install(
+      plugin({
+        id: "fixture",
+        providers: ["fixture"],
+        modelCatalog: {
+          providers: { fixture: { models: [catalogModel] } },
+        },
+      }),
     );
     const result = validateConfigObjectWithPlugins(source, { pluginValidation: "skip" });
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.config.models?.providers?.fixture?.models).toMatchObject([
-        {
-          id: "vision-model",
-          name: "Authored model",
-          reasoning: true,
-          input: ["text", "image"],
-          cost,
-          contextWindow: 64_000,
-          maxTokens: 16_000,
-        },
-      ]);
-    }
+    expect(validatedConfig(result).models?.providers?.fixture?.models).toMatchObject([
+      expectedModel,
+    ]);
     expect(source).toEqual(original);
     expect(mockLoadPluginManifestRegistry).toHaveBeenCalledOnce();
   });
 
   it("applies channel schema defaults even in raw mode", () => {
-    mockLoadPluginManifestRegistry.mockReturnValue(
-      registry(
-        plugin({
-          id: "telegram",
-          channels: ["telegram"],
-          channelCatalogMeta: { id: "telegram", label: "Telegram", blurb: "Telegram channel" },
-          channelConfigs: {
-            telegram: {
-              schema: {
-                type: "object",
-                properties: {
-                  dmPolicy: { type: "string", enum: ["pairing", "allowlist"], default: "pairing" },
-                },
-                additionalProperties: true,
+    install(
+      plugin({
+        id: "telegram",
+        channels: ["telegram"],
+        channelCatalogMeta: { id: "telegram", label: "Telegram", blurb: "Telegram channel" },
+        channelConfigs: {
+          telegram: {
+            schema: {
+              type: "object",
+              properties: {
+                dmPolicy: { type: "string", enum: ["pairing", "allowlist"], default: "pairing" },
               },
-              uiHints: {},
+              additionalProperties: true,
             },
+            uiHints: {},
           },
-        }),
-      ),
+        },
+      }),
     );
-    const result = validateConfigObjectRawWithPlugins({ channels: { telegram: {} } });
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.config.channels?.telegram?.dmPolicy).toBe("pairing");
-    }
+    expect(
+      validatedConfig(validateConfigObjectRawWithPlugins({ channels: { telegram: {} } })).channels
+        ?.telegram?.dmPolicy,
+    ).toBe("pairing");
   });
 
   it("normalizes composed local references without changing shared definitions", () => {
-    const account = accountSchema();
     const schema = {
-      type: "object",
+      ...feishuSchema(),
       properties: {
         appId: { type: "string" },
         appSecret: { type: "string" },
@@ -218,13 +197,13 @@ describe("config validation metadata", () => {
           additionalProperties: { $ref: "#/$defs/Account" },
         },
       },
-      required: ["appId", "appSecret"],
-      additionalProperties: false,
     };
-    const root = { anyOf: [schema] };
-    const external = { $ref: "#/$defs/Root", $defs: { Root: root, Account: account } };
+    const external = {
+      $ref: "#/$defs/Root",
+      $defs: { Root: { anyOf: [schema] }, Account: accountSchema() },
+    };
     const original = structuredClone(external);
-    mockLoadPluginManifestRegistry.mockReturnValue(registry(feishuPlugin(external)));
+    install(feishuPlugin(external));
     const config = {
       heartbeatVisibility: { showOk: true },
       accounts: {
@@ -252,7 +231,7 @@ describe("config validation metadata", () => {
       },
       additionalProperties: true,
     };
-    mockLoadPluginManifestRegistry.mockReturnValue(registry(feishuPlugin(schema)));
+    install(feishuPlugin(schema));
     const base = {
       customChannelField: true,
       heartbeatVisibility: { showOk: true },
@@ -268,18 +247,16 @@ describe("config validation metadata", () => {
   });
 
   it("keeps schema ownership when closer root metadata shadows a later schema", () => {
-    mockLoadPluginManifestRegistry.mockReturnValue(
-      registry(
-        feishuPlugin(feishuSchema(), "openclaw" + String.fromCharCode(10, 27) + "[31m-lark"),
-        plugin({ id: "workspace-channel-labels", origin: "workspace", channels: ["feishu"] }),
-        feishuPlugin(
-          {
-            type: "object",
-            properties: { otherField: { type: "string" } },
-            additionalProperties: false,
-          },
-          "other-global-feishu",
-        ),
+    install(
+      feishuPlugin(feishuSchema(), "openclaw" + String.fromCharCode(10, 27) + "[31m-lark"),
+      plugin({ id: "workspace-channel-labels", origin: "workspace", channels: ["feishu"] }),
+      feishuPlugin(
+        {
+          type: "object",
+          properties: { otherField: { type: "string" } },
+          additionalProperties: false,
+        },
+        "other-global-feishu",
       ),
     );
     const result = validateFeishu({ unsupportedField: true });
@@ -303,10 +280,7 @@ describe("config validation metadata", () => {
     const result = validateConfigObjectRawWithPlugins({
       plugins: { entries: { opik: { enabled: true } } },
     });
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.config.plugins?.entries?.opik?.config).toBeUndefined();
-    }
+    expect(validatedConfig(result).plugins?.entries?.opik?.config).toBeUndefined();
   });
 
   it("loads a metadata snapshot once and applies its plugin defaults", () => {
@@ -314,13 +288,9 @@ describe("config validation metadata", () => {
       manifestRegistry: pluginDefaultsRegistry(),
     }));
     const result = validateConfigObjectWithPlugins(enabledOpik, { loadPluginMetadataSnapshot });
-    expect(result.ok).toBe(true);
+    const config = validatedConfig(result);
     expect(loadPluginMetadataSnapshot).toHaveBeenCalledOnce();
     expect(mockLoadPluginManifestRegistry).not.toHaveBeenCalled();
-    if (result.ok) {
-      expect(result.config.plugins?.entries?.opik?.config).toEqual({
-        workspace: "default-workspace",
-      });
-    }
+    expect(config.plugins?.entries?.opik?.config).toEqual({ workspace: "default-workspace" });
   });
 });

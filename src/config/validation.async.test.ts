@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { expectDefined } from "@openclaw/normalization-core";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as installedRecords from "../plugins/installed-plugin-index-record-reader.js";
 import type { PluginManifestRegistry } from "../plugins/manifest-registry.js";
 import * as schemaValidator from "../plugins/schema-validator.js";
@@ -16,6 +17,16 @@ const env = {
   OPENCLAW_STATE_DIR: "/fixture/state",
   OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
 };
+afterEach(() => vi.restoreAllMocks());
+
+function pluginConfig() {
+  return {
+    plugins: {
+      allow: ["validation-fixture"],
+      entries: { "validation-fixture": { enabled: true, config: {} } },
+    },
+  };
+}
 
 function preparedMetadata(): PreparedConfigValidationPluginMetadata {
   const manifestRegistry: PluginManifestRegistry = {
@@ -47,12 +58,7 @@ function preparedMetadata(): PreparedConfigValidationPluginMetadata {
 describe("async config plugin validation", () => {
   it("revalidates edited settings and schemas while isolating reused plugin defaults", async () => {
     let metadata = preparedMetadata();
-    const raw = {
-      plugins: {
-        allow: ["validation-fixture"],
-        entries: { "validation-fixture": { enabled: true, config: {} } },
-      },
-    };
+    const raw = pluginConfig();
     const validate = () =>
       validateConfigObjectWithPluginsAsync(raw, {
         env,
@@ -63,52 +69,39 @@ describe("async config plugin validation", () => {
       if (!result.ok) {
         throw new Error("Expected valid fixture");
       }
-      const config = result.config.plugins?.entries?.["validation-fixture"]?.config;
-      if (!config) {
-        throw new Error("Expected fixture plugin settings");
-      }
-      return config;
+      return expectDefined(
+        result.config.plugins?.entries?.["validation-fixture"]?.config,
+        "fixture plugin settings",
+      );
     };
     const check = vi.spyOn(schemaValidator, "validatePluginSchemaValue");
-    try {
-      readWorkspace(await validate()).workspace = "caller-mutated";
-      expect(readWorkspace(await validate()).workspace).toBe("prepared-workspace");
-      expect(check).toHaveBeenCalledTimes(1);
+    readWorkspace(await validate()).workspace = "caller-mutated";
+    expect(readWorkspace(await validate()).workspace).toBe("prepared-workspace");
+    expect(check).toHaveBeenCalledTimes(1);
 
-      raw.plugins.entries["validation-fixture"].config = { workspace: 42 };
-      expect(await validate()).toMatchObject({
-        ok: false,
-        issues: [
-          expect.objectContaining({ path: "plugins.entries.validation-fixture.config.workspace" }),
-        ],
-      });
-      raw.plugins.entries["validation-fixture"].config = {};
-      expect(readWorkspace(await validate()).workspace).toBe("prepared-workspace");
-      expect(check).toHaveBeenCalledTimes(2);
-      const schema = metadata.manifestRegistry.plugins[0]?.configSchema;
-      if (!schema) {
-        throw new Error("Expected fixture plugin schema");
-      }
-      schema.properties = { workspace: { type: "string", default: "edited-default" } };
-      expect(readWorkspace(await validate()).workspace).toBe("edited-default");
-      expect(check).toHaveBeenCalledTimes(3);
+    raw.plugins.entries["validation-fixture"].config = { workspace: 42 };
+    expect(await validate()).toMatchObject({
+      ok: false,
+      issues: [
+        expect.objectContaining({ path: "plugins.entries.validation-fixture.config.workspace" }),
+      ],
+    });
+    raw.plugins.entries["validation-fixture"].config = {};
+    expect(readWorkspace(await validate()).workspace).toBe("prepared-workspace");
+    expect(check).toHaveBeenCalledTimes(2);
+    const schema = expectDefined(metadata.manifestRegistry.plugins[0]?.configSchema, "schema");
+    schema.properties = { workspace: { type: "string", default: "edited-default" } };
+    expect(readWorkspace(await validate()).workspace).toBe("edited-default");
+    expect(check).toHaveBeenCalledTimes(3);
 
-      metadata = preparedMetadata();
-      expect(readWorkspace(await validate()).workspace).toBe("prepared-workspace");
-      expect(check).toHaveBeenCalledTimes(4);
-    } finally {
-      check.mockRestore();
-    }
+    metadata = preparedMetadata();
+    expect(readWorkspace(await validate()).workspace).toBe("prepared-workspace");
+    expect(check).toHaveBeenCalledTimes(4);
   });
 
   it("retires removed schema inputs without discovering metadata for an empty revision", async () => {
     const metadata = preparedMetadata();
-    const raw = {
-      plugins: {
-        allow: ["validation-fixture"],
-        entries: { "validation-fixture": { enabled: true, config: {} } },
-      },
-    };
+    const raw = pluginConfig();
     const load = vi.fn(async () => metadata);
     const validate = (config: unknown) =>
       validateConfigObjectWithPluginsAsync(config, {
@@ -116,21 +109,17 @@ describe("async config plugin validation", () => {
         loadPluginMetadataSnapshotAsync: load,
       });
     const check = vi.spyOn(schemaValidator, "validatePluginSchemaValue");
-    try {
-      expect((await validate(raw)).ok).toBe(true);
-      expect(check).toHaveBeenCalledTimes(1);
-      expect((await validate({ plugins: { enabled: false } })).ok).toBe(true);
-      expect((await validate(raw)).ok).toBe(true);
-      expect(check).toHaveBeenCalledTimes(2);
+    expect((await validate(raw)).ok).toBe(true);
+    expect(check).toHaveBeenCalledTimes(1);
+    expect((await validate({ plugins: { enabled: false } })).ok).toBe(true);
+    expect((await validate(raw)).ok).toBe(true);
+    expect(check).toHaveBeenCalledTimes(2);
 
-      load.mockClear();
-      expect((await validate({ gateway: { mode: "local" } })).ok).toBe(true);
-      expect(load).not.toHaveBeenCalled();
-      expect((await validate(raw)).ok).toBe(true);
-      expect(check).toHaveBeenCalledTimes(3);
-    } finally {
-      check.mockRestore();
-    }
+    load.mockClear();
+    expect((await validate({ gateway: { mode: "local" } })).ok).toBe(true);
+    expect(load).not.toHaveBeenCalled();
+    expect((await validate(raw)).ok).toBe(true);
+    expect(check).toHaveBeenCalledTimes(3);
   });
 
   it.each(["runtime", "strict"] as const)(
@@ -180,10 +169,7 @@ describe("async config plugin validation", () => {
     const load = vi.fn((_config: OpenClawConfig) => gate.promise);
     const raw = {
       gateway: { port: 18789 },
-      plugins: {
-        allow: ["validation-fixture"],
-        entries: { "validation-fixture": { enabled: true, config: {} } },
-      },
+      ...pluginConfig(),
     };
     const expected = validateConfigObjectWithPlugins(raw, {
       env,
@@ -231,10 +217,7 @@ describe("async config plugin validation", () => {
           defaults: { systemAgent: { agentId: "main" } },
           entries: { main: {}, ops: {} },
         },
-        plugins: {
-          allow: ["validation-fixture"],
-          entries: { "validation-fixture": { enabled: true, config: {} } },
-        },
+        ...pluginConfig(),
       };
       const load = vi.fn(async () => metadata);
       const result = await validateConfigObjectWithPluginsAsync(raw, {
@@ -258,28 +241,24 @@ describe("async config plugin validation", () => {
     const read = vi.spyOn(installedRecords, "loadInstalledPluginIndexInstallRecordsSync");
     const metadata = preparedMetadata();
     metadata.installedPluginRecordIds = new Set(["missing-fixture"]);
-    try {
-      const result = await validateConfigObjectWithPluginsAsync(
-        {
-          channels: { "missing-fixture": { enabled: true } },
-        },
-        {
-          env,
-          loadPluginMetadataSnapshotAsync: async () => metadata,
-        },
-      );
-      expect(result).toMatchObject({
-        ok: true,
-        warnings: expect.arrayContaining([
-          expect.objectContaining({
-            path: "channels.missing-fixture",
-            message: expect.stringContaining("stale channel plugin config ignored"),
-          }),
-        ]),
-      });
-      expect(read).not.toHaveBeenCalled();
-    } finally {
-      read.mockRestore();
-    }
+    const result = await validateConfigObjectWithPluginsAsync(
+      {
+        channels: { "missing-fixture": { enabled: true } },
+      },
+      {
+        env,
+        loadPluginMetadataSnapshotAsync: async () => metadata,
+      },
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      warnings: expect.arrayContaining([
+        expect.objectContaining({
+          path: "channels.missing-fixture",
+          message: expect.stringContaining("stale channel plugin config ignored"),
+        }),
+      ]),
+    });
+    expect(read).not.toHaveBeenCalled();
   });
 });

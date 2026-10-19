@@ -24,6 +24,16 @@ const envKeys = [
   "OPENCLAW_DISABLE_BUNDLED_PLUGINS",
 ];
 const captureEnv = () => Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+const waitForPhase = (
+  gate: ReturnType<typeof createDeferred>,
+  body: Promise<void>,
+  phase: string,
+) => awaitGateBeforeSettlement(gate.promise, body, `Corpus body finished before ${phase}`);
+
+function expectRetainedInputs(home: string) {
+  expect(process.env.HOME).toBe(home);
+  expect(fs.existsSync(path.join(home, ".openclaw", "openclaw.json"))).toBe(true);
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -96,11 +106,7 @@ it("joins an aborted Doctor phase and database cleanup before removing inputs or
     let teardown: Promise<void> | undefined;
     let restored = false;
     try {
-      await awaitGateBeforeSettlement(
-        doctorEntered.promise,
-        body,
-        "Corpus body finished before Doctor phase",
-      );
+      await waitForPhase(doctorEntered, body, "Doctor phase");
       const home = process.env.HOME!;
       homes.push(home);
       expect(new Set(homes).size).toBe(homes.length);
@@ -130,29 +136,19 @@ it("joins an aborted Doctor phase and database cleanup before removing inputs or
       expect(databases).not.toHaveBeenCalled();
 
       releaseDoctor.resolve();
-      await awaitGateBeforeSettlement(
-        databaseEntered.promise,
-        body,
-        "Corpus body finished before database cleanup",
-      );
+      await waitForPhase(databaseEntered, body, "database cleanup");
       expect(preflight).toHaveBeenCalledTimes(1);
       expect(restored).toBe(false);
       expect(closeState.mock.calls).toHaveLength(closedBefore);
       expect(events).toHaveLength(iteration * 3);
-      expect(process.env.HOME).toBe(home);
-      expect(fs.existsSync(path.join(home, ".openclaw", "openclaw.json"))).toBe(true);
+      expectRetainedInputs(home);
 
       releaseDatabase.resolve();
-      await awaitGateBeforeSettlement(
-        stateEntered.promise,
-        body,
-        "Corpus body finished before shared-state cleanup",
-      );
+      await waitForPhase(stateEntered, body, "shared-state cleanup");
       expect(restored).toBe(false);
       expect(closeState.mock.calls).toHaveLength(closedBefore + 1);
       expect(events.slice(iteration * 3)).toEqual(["database-close"]);
-      expect(process.env.HOME).toBe(home);
-      expect(fs.existsSync(path.join(home, ".openclaw", "openclaw.json"))).toBe(true);
+      expectRetainedInputs(home);
       releaseState.resolve();
       expect(await bodyResult).toBe(aborted);
       await teardown;
@@ -218,11 +214,7 @@ it.skipIf(process.platform === "win32")(
     const body = fixture.runCase("2026.9.2", "empty-providers.json", signal);
     void body.catch(() => {});
     try {
-      await awaitGateBeforeSettlement(
-        entered.promise,
-        body,
-        "Corpus body finished before shared-state resource drain",
-      );
+      await waitForPhase(entered, body, "shared-state resource drain");
       const home = process.env.HOME!;
       expect(fs.existsSync(path.join(home, ".openclaw", "openclaw.json"))).toBe(true);
       expect(stages.filter((stage) => stage === "database-integrity")).toEqual([]);
@@ -310,8 +302,7 @@ it("retains fixture inputs and env when database or worker-scope cleanup cannot 
     ).rejects.toBe(failure);
     expect(doctor.runDoctorConfigPreflight).toHaveBeenCalledTimes(1);
     expect(workers.createSqliteReadOnlyWorkerScope).toHaveBeenCalledTimes(1);
-    expect(fs.existsSync(path.join(home, ".openclaw", "openclaw.json"))).toBe(true);
-    expect(process.env.HOME).toBe(home);
+    expectRetainedInputs(home);
     expect(() => owner.assertReleased()).toThrow("Unreleased Vitest resource claim");
   } finally {
     // All real closes finished before the injected rejections; this probe has no
