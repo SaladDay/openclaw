@@ -554,6 +554,7 @@ export function mergeWindowsTaskRecoveryFailure(
 
 export type UpdateAdmissionReportParams = {
   mode?: UpdateRunResult["mode"];
+  before?: UpdateRunResult["before"];
   stepResult?: Pick<UpdateRunResult, "steps" | "failedStep">;
   recoverySteps?: readonly UpdateRecoveryStep[];
   failureFacts?: readonly UpdateFailureFact[];
@@ -599,6 +600,7 @@ export function createPreMutationUpdateResult(
     mode: params.mode ?? (params.installKind === "git" ? "git" : "unknown"),
     root: params.root,
     reason: params.reason,
+    ...(params.before ? { before: params.before } : {}),
     failedStep: outcome.status === "error" ? failedStep : undefined,
     steps: stepResult?.failedStep
       ? stepResult.steps

@@ -40,6 +40,7 @@ import { withTestDir } from "../../test-helpers/temp-dir.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { quoteCliArg } from "../quote-cli-arg.js";
 import * as shared from "./shared.js";
+import { reportPreMutationUpdateResult } from "./update-command-admission-report.js";
 import * as doctorChild from "./update-command-doctor-child.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
 import { updateGitInstall } from "./update-command-git.js";
@@ -48,7 +49,6 @@ import * as packageUpdate from "./update-command-package.js";
 import { runPackageInstallUpdate, stagePackageInstallUpdate } from "./update-command-package.js";
 import { UpdateCommandFailure, UnreportedUpdateAdmissionOutcome } from "./update-command-result.js";
 import { resolvePackageRuntimePreflight } from "./update-command-runtime-preflight.js";
-import { reportPreMutationUpdateResult } from "./update-command-terminal.js";
 import { resolveUpdateResultNextAction } from "./update-recovery-guidance.js";
 
 afterEach(() => vi.restoreAllMocks());

@@ -114,7 +114,11 @@ describe("update report artifact ownership", () => {
     });
     expect(fixture.params.readRun).toHaveBeenCalledTimes(1);
     expect(await fs.readdir(path.dirname(fixture.outputPath))).toEqual([]);
-    expect((await fs.readdir(path.dirname(diagnostic!))).sort()).toEqual([
+    expect(
+      (await fs.readdir(path.dirname(diagnostic!))).toSorted((left, right) =>
+        left.localeCompare(right),
+      ),
+    ).toEqual([
       expect.stringMatching(/^openclaw-update-failure-.*\.json$/),
       expect.stringMatching(/^openclaw-update-lint-.*\.json$/),
     ]);

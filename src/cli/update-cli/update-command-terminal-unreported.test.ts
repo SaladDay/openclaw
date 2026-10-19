@@ -14,6 +14,7 @@ import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { defaultRuntime } from "../../runtime.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqliteDir } from "../../state/openclaw-state-db.paths.js";
+import { reportUnreportedUpdateAdmissionOutcome } from "./update-command-admission-report.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-error.js";
 import {
   UnreportedUpdateAdmissionOutcome,
@@ -23,7 +24,6 @@ import {
 import {
   deferUpdateCommandTerminalResult,
   publishUpdateCommandTerminalResult,
-  reportUnreportedUpdateAdmissionOutcome,
   withUpdateCommandTerminalResult,
 } from "./update-command-terminal.js";
 import { withUpdateFailureTriage } from "./update-command-triage.js";
@@ -55,14 +55,21 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it.each(["skipped", "error"] as const)(
-  "does not borrow a nested Run for a detached %s refusal",
-  async (status) => {
+it.each([
+  { status: "skipped", capturedBefore: false },
+  { status: "error", capturedBefore: false },
+  { status: "skipped", capturedBefore: true },
+  { status: "error", capturedBefore: true },
+] as const)(
+  "does not borrow a nested Run for a detached $status refusal (captured before: $capturedBefore)",
+  async ({ status, capturedBefore }) => {
     const env = { OPENCLAW_STATE_DIR: dirs.make("update-detached-admission-") };
     const recorded = createUpdateRun({ trigger: "cli" }, { env });
     const run = { runId: recorded.runId, env };
     closeOpenClawStateDatabaseForTest();
-    const entries = await fs.readdir(env.OPENCLAW_STATE_DIR, { recursive: true });
+    const entries = (await fs.readdir(env.OPENCLAW_STATE_DIR, { recursive: true })).toSorted(
+      (left, right) => left.localeCompare(right),
+    );
     const files = await Promise.all(
       entries.map(async (entry) => {
         const file = path.join(env.OPENCLAW_STATE_DIR, entry);
@@ -75,6 +82,7 @@ it.each(["skipped", "error"] as const)(
     const refusal = new UnreportedUpdateAdmissionOutcome(
       {
         root: env.OPENCLAW_STATE_DIR,
+        ...(capturedBefore ? { before: { version: null } } : {}),
         installKind: "package",
         reason: "fixture-admission-refused",
         message: "captured refusal after the original owner settled",
@@ -108,13 +116,17 @@ it.each(["skipped", "error"] as const)(
       });
     }
     expect(result.runId).toBeUndefined();
-    expect(result.before).toBeUndefined();
+    expect(result.before).toEqual(capturedBefore ? { version: null } : undefined);
     assert(
       typeof result.reportPath === "string" &&
         result.reportPath.startsWith(detachedRoot + path.sep),
     );
     expect(await fs.readFile(result.reportPath, "utf8")).toContain("fixture-admission-refused");
-    expect(await fs.readdir(env.OPENCLAW_STATE_DIR, { recursive: true })).toEqual(entries);
+    expect(
+      (await fs.readdir(env.OPENCLAW_STATE_DIR, { recursive: true })).toSorted((left, right) =>
+        left.localeCompare(right),
+      ),
+    ).toEqual(entries);
     for (const file of files) {
       if (file) {
         expect(await fs.readFile(file.file)).toEqual(file.body);

@@ -18,6 +18,7 @@ import {
   usesCandidateUpdateAdmission,
   type UpdateCommandOptions,
 } from "./shared.js";
+import { reportUnreportedUpdateAdmissionOutcome } from "./update-command-admission-report.js";
 import { withPrivateStagedPackageInstall } from "./update-command-artifact.js";
 import {
   applyUpdateCandidateAdmission,
@@ -53,10 +54,7 @@ import {
 } from "./update-command-service-env.js";
 import type { UpdateCommandRecoveryState } from "./update-command-service-maintenance.js";
 import { resolveFreshUpdateMetadata, resolveUpdateCommandTarget } from "./update-command-target.js";
-import {
-  reportUnreportedUpdateAdmissionOutcome,
-  withUpdateCommandTerminalResult,
-} from "./update-command-terminal.js";
+import { withUpdateCommandTerminalResult } from "./update-command-terminal.js";
 import { prepareUpdateCommandFailureTriage } from "./update-command-triage.js";
 
 export async function initializeAndRunUpdate(

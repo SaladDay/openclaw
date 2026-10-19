@@ -84,7 +84,7 @@ describe("update progress", () => {
   });
 
   it("prepares report artifacts before emitting without later history or filesystem work", async () => {
-    const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
+    const outputLog = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
     const json = vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => {});
     const emit = await prepareResult(result, { json: true, run: context });
     expect(writeUpdateRunReportArtifact).toHaveBeenCalledOnce();
@@ -92,7 +92,7 @@ describe("update progress", () => {
       vi.mocked(writeUpdateRunReportArtifact).mock.calls[0]?.[0].assertCurrent,
     ).toBeUndefined();
     expect(json).not.toHaveBeenCalled();
-    expect(log).not.toHaveBeenCalled();
+    expect(outputLog).not.toHaveBeenCalled();
     vi.mocked(getUpdateRun).mockImplementation(() => {
       throw new Error("released history must not be reopened");
     });
