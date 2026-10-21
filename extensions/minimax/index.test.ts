@@ -420,6 +420,21 @@ describe("minimax provider hooks", () => {
     }
   });
 
+  it.each(["xhigh", "max"] as const)(
+    "keeps session M3.1 effort %s when the runtime caps reasoning at high",
+    async (thinkingLevel) => {
+      const payload: Record<string, unknown> = {};
+      const wrapped = apiProvider.wrapStreamFn?.({
+        provider: "minimax",
+        modelId: m31Model.id,
+        thinkingLevel,
+        streamFn: payloadStream(payload),
+      });
+      void wrapped?.(m31Model, { messages: [] }, { reasoning: "high" });
+      expect(payload.output_config).toEqual({ effort: thinkingLevel });
+    },
+  );
+
   it("keeps M3.1 request shaping away from openai-completions", async () => {
     const payload = { thinking: { type: "disabled" } };
     const wrapped = apiProvider.wrapStreamFn?.({
