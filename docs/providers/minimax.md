@@ -19,20 +19,23 @@ Referral link for MiniMax Coding Plan (10% off): [MiniMax Coding Plan](https://p
 
 ## Built-in catalog
 
-| Model                    | Type             | Description                              |
-| ------------------------ | ---------------- | ---------------------------------------- |
-| `MiniMax-M3`             | Chat (reasoning) | Default hosted reasoning model           |
-| `MiniMax-M3.1-Flash`     | Chat (reasoning) | Adjustable effort, 1M context            |
-| `MiniMax-M2.7`           | Chat (reasoning) | Previous hosted reasoning model          |
-| `MiniMax-M2.7-highspeed` | Chat (reasoning) | Faster M2.7 reasoning tier               |
-| `MiniMax-VL-01`          | Vision           | Image understanding model                |
-| `image-01`               | Image generation | Text-to-image and image-to-image editing |
-| `music-2.6`              | Music generation | Default music model                      |
-| `MiniMax-Hailuo-2.3`     | Video generation | Text-to-video and image-to-video flows   |
+| Model                        | Type             | Description                                |
+| ---------------------------- | ---------------- | ------------------------------------------ |
+| `MiniMax-M3`                 | Chat (reasoning) | Default hosted reasoning model             |
+| `MiniMax-M3.1-Flash`         | Chat (reasoning) | Adjustable effort, 1M context              |
+| `MiniMax-M3.1-Flash-Preview` | Chat (reasoning) | Legacy Preview id for saved configurations |
+| `MiniMax-M2.7`               | Chat (reasoning) | Previous hosted reasoning model            |
+| `MiniMax-M2.7-highspeed`     | Chat (reasoning) | Faster M2.7 reasoning tier                 |
+| `MiniMax-VL-01`              | Vision           | Image understanding model                  |
+| `image-01`                   | Image generation | Text-to-image and image-to-image editing   |
+| `music-2.6`                  | Music generation | Default music model                        |
+| `MiniMax-Hailuo-2.3`         | Video generation | Text-to-video and image-to-video flows     |
 
 Model refs follow the auth path: `minimax/<model>` for API-key setups, `minimax-portal/<model>` for OAuth setups.
 
 `MiniMax-M3.1-Flash` supports text and image input with a 1,000,000-token context window. It is available with pay-as-you-go API keys as well as Token Plan and MiniMax Code. Its bundled cost fields use MiniMax's published per-token pricing: $0.15 input, $0.60 output, and $0.015 cache read per 1M tokens. `MiniMax-M3` remains the default model.
+
+`MiniMax-M3.1-Flash-Preview` remains recognized for saved configurations, with the same M3.1 capabilities and effort handling. Its legacy Token Plan cost fields remain zero because no per-token Preview pricing was published; this does not mean the service is free. Provider-side availability of the Preview id can change; select `MiniMax-M3.1-Flash` for new configurations.
 
 MiniMax M3 and M3.1 Flash are preferred [Code Mode](/tools/code-mode) models on both API-key and OAuth routes. With no global Code Mode setting, the automatic tier can engage it; explicit agent or model settings still take precedence.
 
@@ -352,7 +355,7 @@ See [MiniMax Search](/tools/minimax-search) for full web search configuration an
 
     MiniMax-M3 is exempt: M3 returns an empty `content` array with `stop_reason: "end_turn"` when thinking is disabled, so OpenClaw removes the implicit disabled default for M3 and, when a thinking level is set, forces `thinking: { type: "adaptive" }` instead.
 
-    `MiniMax-M3.1-Flash` requires adaptive thinking. OpenClaw sends the selected level as `output_config.effort`; `/think low` through `/think max` select its five supported efforts. The default is `max`, and `off` is not offered because MiniMax rejects disabled thinking with HTTP 400. See [MiniMax's Anthropic API contract](https://platform.minimax.io/docs/api-reference/text-anthropic-api).
+    `MiniMax-M3.1-Flash` and the legacy `MiniMax-M3.1-Flash-Preview` id require adaptive thinking. OpenClaw sends the selected level as `output_config.effort`; `/think low` through `/think max` select their five supported efforts. The default is `max`, and `off` is not offered because MiniMax rejects disabled thinking with HTTP 400. See [MiniMax's Anthropic API contract](https://platform.minimax.io/docs/api-reference/text-anthropic-api).
 
     Available thinking levels per model family:
 
