@@ -55,6 +55,7 @@ import {
   drainPendingContextEngineTurnsBeforeRun,
   finalizeAcceptedContextEngineTurn,
 } from "./context-engine-turn-attempt.js";
+import { createTurnLease } from "./context-engine-turn.test-support.js";
 import { createAgentHarnessHostCapabilities } from "./host-capability.js";
 import { createAdmittedHostCapabilityTestFixture } from "./host-capability.test-support.js";
 
@@ -172,6 +173,13 @@ async function prepareAdmission(
     abortSignal: controller.signal,
   };
   const host = await createAdmittedHostCapabilityTestFixture(attempt);
+  const createHost = (
+    overrides: Partial<Parameters<typeof createAgentHarnessHostCapabilities>[0]["attempt"]> = {},
+  ) =>
+    createAgentHarnessHostCapabilities({
+      attempt: { ...attempt, admittedRunContext: host.admittedRunContext, ...overrides },
+      pluginId: "codex",
+    });
   const annotate = (annotation = nativeAnnotation()) =>
     expectDefined(
       host.hostCapabilities.annotateCurrentUserTurn,
@@ -185,6 +193,7 @@ async function prepareAdmission(
     recorder,
     onPersisted,
     controller,
+    createHost,
     patchSession,
     annotate,
     async expectRefused(annotation = nativeAnnotation(), message?: string) {
@@ -336,14 +345,7 @@ describe("host-owned current admission annotation", () => {
             })),
           );
           expect(await listSessionPendingInputs(f.target)).toEqual({ items: [], total: 0 });
-          host = createAgentHarnessHostCapabilities({
-            attempt: {
-              ...f.attempt,
-              admittedRunContext: f.admittedRunContext,
-              userTurnTranscriptRecorder: recorder,
-            },
-            pluginId: "codex",
-          });
+          host = f.createHost({ userTurnTranscriptRecorder: recorder });
           const annotate = expectDefined(host.capabilities.annotateCurrentUserTurn, "annotation");
           await annotate(nativeAnnotation(content));
           const refreshed = expectDefined(recorder.getAdmissionReceipt(), "refreshed admission");
@@ -436,16 +438,8 @@ describe("host-owned current admission annotation", () => {
           commitTurn,
         };
         const lease: ContextEngineLogicalTurnLease = {
-          engine,
-          effectiveEngine: engine,
+          ...createTurnLease(engine),
           effectiveEngineId: "annotation",
-          degraded: false,
-          disposed: false,
-          selectForHost: vi.fn(),
-          degradeBeforeStart: vi.fn(),
-          begin: vi.fn(),
-          deferDisposalUntil: vi.fn(),
-          onDispose: vi.fn(),
           dispose: async () => {},
         };
         const warn = vi.fn();
@@ -586,14 +580,7 @@ describe("host-owned current admission annotation", () => {
     "does not replace an inherited %s with a fresh session snapshot",
     async (field) => {
       await withAdmission(async (f) => {
-        const host = createAgentHarnessHostCapabilities({
-          attempt: {
-            ...f.attempt,
-            admittedRunContext: f.admittedRunContext,
-            sessionTarget: { ...f.target, [field]: "stale" },
-          },
-          pluginId: "codex",
-        });
+        const host = f.createHost({ sessionTarget: { ...f.target, [field]: "stale" } });
         const before = await loadTranscriptEvents(f.target);
         try {
           await expect(
@@ -729,11 +716,7 @@ describe("host-owned current admission annotation", () => {
           workerTurnClaim: claim,
           receiptAuthority: () => placements.validateTurnClaim(claim),
         },
-        () =>
-          createAgentHarnessHostCapabilities({
-            attempt: { ...f.attempt, admittedRunContext: f.admittedRunContext },
-            pluginId: "codex",
-          }),
+        () => f.createHost(),
       );
       const before = await loadTranscriptEvents(f.target);
       const release = await holdTranscriptWriter(f.target);
@@ -768,8 +751,26 @@ describe("host-owned current admission annotation", () => {
   it("refuses conflicting native provenance without rewriting again", async () => {
     await withAdmission(async (f) => {
       await f.annotate();
-      await f.expectRefused({ ...nativeAnnotation(), mirrorIdentity: "conflict" });
+      await f.expectRefused({ ...nativeAnnotation(), mirrorOrigin: "other-harness" });
     });
+  });
+
+  it("refuses a native annotation recorded for another run", async () => {
+    await withAdmission(
+      async (f) => {
+        await f.expectRefused(undefined, "recorded provenance");
+      },
+      {
+        beforeMessageWrite: ({ message }) => ({
+          ...message,
+          __openclaw: {
+            ...asOptionalRecord(Reflect.get(message, "__openclaw")),
+            ...nativeAnnotation(),
+            runId: "another-run",
+          },
+        }),
+      },
+    );
   });
 
   it("does not rerun admission hooks or bless their content edits", async () => {
@@ -787,14 +788,7 @@ describe("host-owned current admission annotation", () => {
 
   it("does not issue current-row authority for a copied recorder", async () => {
     await withAdmission(async (f) => {
-      const host = createAgentHarnessHostCapabilities({
-        attempt: {
-          ...f.attempt,
-          admittedRunContext: f.admittedRunContext,
-          userTurnTranscriptRecorder: { ...f.recorder },
-        },
-        pluginId: "codex",
-      });
+      const host = f.createHost({ userTurnTranscriptRecorder: { ...f.recorder } });
       try {
         expect(host.capabilities.annotateCurrentUserTurn).toBeUndefined();
       } finally {

@@ -26,6 +26,30 @@ import { buildRequesterSettleWakeIdentity } from "./subagent-requester-settle-id
 type Registration = Parameters<typeof registerSubagentRun>[0];
 type Delivery = Parameters<typeof deliverSubagentAnnouncement>[0];
 
+export const requesterCompletionRecoveryCases = [
+  "current",
+  "owner current",
+  "owner nested password",
+  "owner nested committed replay",
+  "owner nested adopted replay",
+  "owner rotated",
+  "current with child",
+  "owner current with child",
+  "owner revoked with child",
+  "overloaded then current",
+  "overloaded then revoked",
+  "overloaded then retired",
+  "unavailable policy then current",
+  "revoked after restore",
+  "missing source",
+  "missing source with unrelated requester claim",
+  "missing parent source",
+  "mismatched source",
+  "revoked grant",
+  "mixed sources",
+  "replaced requester",
+] as const;
+
 export function createRequesterCompletionClient(params: {
   cfg: OpenClawConfig;
   context: GatewayRequestContext;
@@ -157,6 +181,7 @@ export async function prepareNestedRequesterReplay(params: {
         request: { message: delivery.triggerMessage },
         isOneShotModelRun: false,
         runId,
+        lifecycleStorePath: expectDefined(cfg.session?.store, "requester session store"),
         getAdmittedSessionId: () => sessionId,
         assertResumeAdmissionCurrent: () => ({ sessionId, lifecycleRevision, updatedAt: 1 }),
         context: {

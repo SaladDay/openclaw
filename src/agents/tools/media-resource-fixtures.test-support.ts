@@ -1,6 +1,6 @@
 import { vi } from "vitest";
 import { clearPluginMetadataLifecycleCaches } from "../../plugins/plugin-metadata-lifecycle.js";
-import { createDeferredCore } from "../../shared/deferred.js";
+import { observeMediaGenerationSettlement } from "../media-generation-activity.observer.test-support.js";
 import {
   admitMediaHandle,
   resetGeneratedMediaTaskActivityForTests,
@@ -12,28 +12,6 @@ import { createPreparedModelRuntimeSnapshot } from "../prepared-model-runtime.fu
 import { ModelRegistry } from "../sessions/model-registry.js";
 import type { imageGenerationTaskLifecycle } from "./media-generate-background.js";
 
-export function phase() {
-  const entered = createDeferredCore();
-  const released = createDeferredCore();
-  return {
-    entered: entered.promise,
-    release: () => released.resolve(),
-    pause: async () => {
-      entered.resolve();
-      await released.promise;
-    },
-  };
-}
-
-export function waitForPhase(entered: Promise<unknown>, work: Promise<unknown>) {
-  return Promise.race([
-    entered,
-    work.then(() => {
-      throw new Error("Media work settled before the expected phase");
-    }),
-  ]);
-}
-
 export function reset() {
   vi.restoreAllMocks();
   resetRecentMediaGenerationDuplicateGuardsForTests();
@@ -41,7 +19,12 @@ export function reset() {
   clearPluginMetadataLifecycleCaches();
 }
 
-export function snapshot(prepared: Awaited<ReturnType<typeof prepareWorkspaceBuildGroup>>) {
+export function snapshot(
+  prepared: Awaited<ReturnType<typeof prepareWorkspaceBuildGroup>>,
+  loadAuth = async (): Promise<never> => {
+    throw new Error("No model auth in this fixture");
+  },
+) {
   const facts = prepared.agentFacts[0]!;
   const catalog = prepareConfiguredRuntimeFacts({
     agentFacts: facts,
@@ -59,9 +42,7 @@ export function snapshot(prepared: Awaited<ReturnType<typeof prepareWorkspaceBui
     readPublishedModels: () => undefined,
     loadFullModelCatalog: async () => catalog.modelCatalog,
     loadNativeModelCatalog: async () => catalog.modelCatalog,
-    loadAuth: async () => {
-      throw new Error("No model auth in this fixture");
-    },
+    loadAuth,
   });
 }
 
@@ -69,19 +50,25 @@ export function admitTask(
   lifecycle: typeof imageGenerationTaskLifecycle,
   requesterSessionKey: string,
 ) {
-  vi.spyOn(lifecycle, "createTaskRun").mockImplementation(async () =>
+  let admitted = 0;
+  const created = vi.spyOn(lifecycle, "createTaskRun").mockImplementation(async () =>
     admitMediaHandle({
-      taskId: "resource-task",
-      runId: "resource-run",
+      taskId: `resource-task-${++admitted}`,
+      runId: `resource-run-${admitted}`,
       detach: true,
       requesterSessionKey,
       requesterAgentId: "main",
       taskLabel: "Synthetic resource proof",
     }),
   );
-  vi.spyOn(lifecycle, "recordTaskProgress").mockImplementation(() => {});
-  const completed = vi.spyOn(lifecycle, "completeTaskRun").mockImplementation(() => {});
-  const failed = vi.spyOn(lifecycle, "failTaskRun").mockImplementation(() => {});
-  vi.spyOn(lifecycle, "wakeTaskCompletion").mockResolvedValue({ status: "delivered" });
-  return { completed, failed };
+  const completeTaskRun = lifecycle.completeTaskRun.bind(lifecycle);
+  const failTaskRun = lifecycle.failTaskRun.bind(lifecycle);
+  const completed = vi.spyOn(lifecycle, "completeTaskRun").mockImplementation(completeTaskRun);
+  const failed = vi.spyOn(lifecycle, "failTaskRun").mockImplementation(failTaskRun);
+  const settlement = observeMediaGenerationSettlement({
+    completeOperation: completed,
+    failOperation: failed,
+  });
+  const wake = vi.spyOn(lifecycle, "wakeTaskCompletion").mockResolvedValue({ status: "delivered" });
+  return { created, completed, failed, wake, settlement };
 }

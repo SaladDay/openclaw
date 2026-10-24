@@ -89,7 +89,12 @@ function pushMcpHandshake(
     jsonResponse({
       jsonrpc: "2.0",
       id: "c",
-      result: { content: [{ type: "text", text: JSON.stringify(toolPayload) }] },
+      result: {
+        content: [
+          ...["{", "null", "[]", "42"].map((text) => ({ type: "text", text })),
+          { type: "text", text: JSON.stringify(toolPayload) },
+        ],
+      },
     }),
   );
 }
@@ -179,6 +184,22 @@ describe("parallel web search provider", () => {
       }).execute({ search_queries: ["openclaw"] }),
     ).resolves.toMatchObject({ error: "invalid_base_url" });
     expect(endpointMockState.calls).toHaveLength(1);
+  });
+  it.each([
+    "ftp://fixture-user:fixture-url-password@proxy.example/parallel?api_key=fixture-query-token",
+    "fixture-user:fixture-url-password@proxy.example:invalid/parallel?api_key=fixture-query-token",
+    "custom://fixture-user:fixture-url-password@proxy.example/parallel?api_key=fixture-query-token",
+  ])("redacts credentials from rejected custom endpoint %s", async (baseUrl) => {
+    const result = await paidTool({
+      parallel: { apiKey: "par-secret", baseUrl },
+    }).execute({ search_queries: ["invalid credential-bearing endpoint"] });
+    expect(result.message).not.toContain("fixture-url-password");
+    expect(result.message).not.toContain("fixture-query-token");
+    expect(result).toMatchObject({
+      error: "invalid_base_url",
+      message: expect.stringContaining("plugins.entries.parallel.config.webSearch.baseUrl"),
+    });
+    expect(endpointMockState.calls).toHaveLength(0);
   });
   it("normalizes bounded request fields before sending them", async () => {
     enqueueJson();
@@ -470,7 +491,7 @@ describe("parallel-free MCP transport", () => {
       freeTool().execute({ search_queries: [`parallel envelope ${expectedPrefix}`] }),
     ).rejects.toThrow(expectedPrefix);
   });
-  it("runs the 3-step handshake and maps results into the public tool shape", async () => {
+  it("runs the handshake and skips invalid text blocks before mapping the public result", async () => {
     const callerSessionId = `sess-${"a".repeat(40)}`;
     pushMcpHandshake(
       {

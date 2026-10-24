@@ -1,13 +1,15 @@
 import { createServer, type RequestListener, type Server } from "node:http";
-import { connect, type AddressInfo } from "node:net";
+import { connect } from "node:net";
 import type { Duplex } from "node:stream";
 import { setImmediate } from "node:timers/promises";
-import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
+import * as ssrf from "openclaw/plugin-sdk/ssrf-runtime";
 import { withServer } from "openclaw/plugin-sdk/test-env";
 import { withinTest } from "openclaw/plugin-sdk/test-fixtures";
-import { afterEach, beforeEach, describe, expect, it, vi, type MockedFunction } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { listenOnLoopback as bindLoopbackServer } from "../test-support/hanging-loopback-server.js";
 import { fetchClawRouterUsage } from "./usage.js";
 
+const fetchWithSsrFGuard = ssrf.fetchWithSsrFGuard;
 const runningServers: Server[] = [];
 const runningSockets = new Set<Duplex>();
 const PROXY_ENV_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"].flatMap((key) => [
@@ -21,12 +23,9 @@ function trackSocket(socket: Duplex): void {
 }
 
 async function listenOnLoopback(server: Server): Promise<number> {
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => resolve());
-  });
+  const port = await bindLoopbackServer(server);
   runningServers.push(server);
-  return (server.address() as AddressInfo).port;
+  return port;
 }
 
 async function startUsageServer(handler: RequestListener) {
@@ -79,6 +78,7 @@ afterEach(async () => {
   runningSockets.clear();
   await Promise.all(runningServers.splice(0).map(closeServer));
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
 });
 
 function closeServer(server: Server) {
@@ -87,15 +87,10 @@ function closeServer(server: Server) {
   });
 }
 
-type ClawRouterUsageFetchGuard = NonNullable<
-  Parameters<typeof fetchClawRouterUsage>[0]["fetchGuard"]
->;
-
-function mockFetchGuard(
-  response: Response,
-  release: () => Promise<void> = async () => undefined,
-): MockedFunction<ClawRouterUsageFetchGuard> {
-  return vi.fn(async ({ url }) => ({ response, finalUrl: url, release }));
+function mockFetchGuard(response: Response, release: () => Promise<void> = async () => undefined) {
+  return vi
+    .spyOn(ssrf, "fetchWithSsrFGuard")
+    .mockImplementation(async ({ url }) => ({ response, finalUrl: url, release }));
 }
 
 function fetchUsage(
@@ -105,7 +100,8 @@ function fetchUsage(
 }
 
 function fetchResponse(response: Response) {
-  return fetchUsage({ fetchGuard: mockFetchGuard(response) });
+  mockFetchGuard(response);
+  return fetchUsage({});
 }
 
 describe("ClawRouter usage", () => {
@@ -129,7 +125,6 @@ describe("ClawRouter usage", () => {
     const snapshot = await fetchUsage({
       baseUrl: "https://clawrouter.example/v1",
       signal,
-      fetchGuard,
     });
 
     expect(snapshot).toEqual({
@@ -183,8 +178,8 @@ describe("ClawRouter usage", () => {
     const release = vi.fn(async () => {
       await capture.body?.cancel();
     });
-    const fetchGuard = mockFetchGuard(response, release);
-    const outcome = fetchUsage({ fetchGuard }).catch((error: unknown) => error);
+    mockFetchGuard(response, release);
+    const outcome = fetchUsage({}).catch((error: unknown) => error);
 
     try {
       await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
@@ -240,7 +235,7 @@ describe("ClawRouter usage", () => {
       async (baseUrl) => {
         const headersReady = Promise.withResolvers<void>();
         const released = vi.fn();
-        const fetchGuard: ClawRouterUsageFetchGuard = async (params) => {
+        vi.spyOn(ssrf, "fetchWithSsrFGuard").mockImplementation(async (params) => {
           const guarded = await fetchWithSsrFGuard(params).catch((error: unknown) => {
             headersReady.reject(error);
             throw error;
@@ -253,7 +248,7 @@ describe("ClawRouter usage", () => {
               released();
             },
           };
-        };
+        });
         const controller = new AbortController();
         // Keep HTTP/body reads native and advance only the request deadline clock.
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -262,7 +257,6 @@ describe("ClawRouter usage", () => {
           baseUrl,
           timeoutMs: 1,
           signal: controller.signal,
-          fetchGuard,
         }).catch((error: unknown) => error);
         try {
           await withinTest(headersReady.promise, signal);

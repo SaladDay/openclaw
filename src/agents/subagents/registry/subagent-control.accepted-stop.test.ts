@@ -44,6 +44,7 @@ import {
 } from "../../../sessions/session-controller.rpc-sources.js";
 import { markReplyOperationExecutionStarted } from "../../../sessions/session-controller.state.js";
 import { rpcSourceTesting } from "../../../sessions/session-lifecycle-admission.test-support.js";
+import { createEnteredGate } from "../../entered-gate.test-support.js";
 import { isSubagentRegistryWriteCommand } from "../../subagent-test-fixtures.test-helpers.js";
 import * as subagentKillSettlement from "./subagent-control-kill-settlement.js";
 import {
@@ -60,11 +61,39 @@ import {
 import { subagentRuns } from "./subagent-registry-memory.js";
 import { markSubagentRunTerminated } from "./subagent-registry.js";
 import { rowToSubagentRunRecord } from "./subagent-registry.store.codec.js";
+import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { resolveSubagentSessionStatus } from "./subagent-session-metrics.js";
 
 const fixture = useSubagentControlFixture();
 const { writeSession, register } = createControlRunFixture(() => fixture.stateDir);
 const executionJoinObservers = new Map<RpcSourceRef, () => void>();
+
+function interceptRegistryWrite(
+  runId: string,
+  before: (next: SubagentRunRecord | undefined) => (() => void | Promise<void>) | undefined,
+) {
+  fixture.worker.mockImplementation((stateContext, operation, options) =>
+    runSubagentStateWorkerOperation(
+      stateContext,
+      (scope) =>
+        operation({
+          execute: async (command, commandOptions) => {
+            const row = isSubagentRegistryWriteCommand(command)
+              ? command.input.values.find((candidate) => candidate.run_id === runId)
+              : undefined;
+            const after = before(row ? (rowToSubagentRunRecord(row) ?? undefined) : undefined);
+            const receipt = await scope.execute(command, commandOptions);
+            const pending = after?.();
+            if (pending) {
+              await pending;
+            }
+            return receipt;
+          },
+        }),
+      options,
+    ),
+  );
+}
 beforeEach(() => {
   executionJoinObservers.clear();
   const settleSources = subagentKillSettlement.settleSubagentKillSources;
@@ -493,8 +522,7 @@ it("joins an execution registered while its accepted Stop awaits kill-claim pers
   });
   dedupeLifecycle.reserve(sessionKey, "main");
   dedupeLifecycle.bindSessionTarget({ sessionKey, sessionId, agentId: "main" });
-  const claimCommitted = createDeferred();
-  const releaseClaim = createDeferred();
+  const claimGate = createEnteredGate();
   const interrupted = createDeferred();
   const releaseTail = createDeferred();
   const selectedTail = createDeferred();
@@ -536,29 +564,13 @@ it("joins an execution registered while its accepted Stop awaits kill-claim pers
       getSupersededSessionId: () => undefined,
       setAdmittedSessionId: (value) => expect(value).toBe(sessionId),
     });
-    fixture.worker.mockImplementation((stateContext, operation, options) =>
-      runSubagentStateWorkerOperation(
-        stateContext,
-        (scope) =>
-          operation({
-            execute: async (command, commandOptions) => {
-              const row = isSubagentRegistryWriteCommand(command)
-                ? command.input.values.find((candidate) => candidate.run_id === runId)
-                : undefined;
-              const claim = row && rowToSubagentRunRecord(row)?.killIntent;
-              const holdClaim = Boolean(claim) && !heldClaim;
-              heldClaim ||= holdClaim;
-              const receipt = await scope.execute(command, commandOptions);
-              if (holdClaim) {
-                claimCommitted.resolve();
-                await releaseClaim.promise;
-              }
-              return receipt;
-            },
-          }),
-        options,
-      ),
-    );
+    interceptRegistryWrite(runId, (next) => {
+      if (!next?.killIntent || heldClaim) {
+        return undefined;
+      }
+      heldClaim = true;
+      return claimGate.wait;
+    });
     pending = killSubagentRunAdmin({
       cfg: getRuntimeConfig(),
       sessionKey,
@@ -574,7 +586,7 @@ it("joins an execution registered while its accepted Stop awaits kill-claim pers
       },
     );
     await awaitGateBeforeSettlement(
-      claimCommitted.promise,
+      claimGate.entered,
       pending,
       "Stop returned before the native kill claim committed",
     );
@@ -606,7 +618,7 @@ it("joins an execution registered while its accepted Stop awaits kill-claim pers
     })();
     trackSessionControllerSourceWork(owner.input, execution);
     const settlement = observeExecutionJoin(owner, selectedTail.resolve);
-    releaseClaim.resolve();
+    claimGate.release();
     await awaitGateBeforeSettlement(
       selectedTail.promise,
       pending,
@@ -626,7 +638,7 @@ it("joins an execution registered while its accepted Stop awaits kill-claim pers
     expect(getRpcSource(runId)).toBeUndefined();
     expect(onResult).toHaveBeenCalledOnce();
   } finally {
-    releaseClaim.resolve();
+    claimGate.release();
     interrupted.resolve();
     releaseTail.resolve();
     admission?.release();
@@ -692,27 +704,18 @@ it.each([
     const context = createDirectChatContext({ getRuntimeConfig });
     const resolver = () => context;
     bindGatewayContextResolver(root, resolver);
-    const registrationParams = {
-      target: captureSessionTarget({
-        storeScope: rootStorePath,
-        sessionKey: key("root"),
-        agentId: "main",
-        incarnation: "root-session",
-      }),
+    const registrationTarget = {
+      storePath: rootStorePath,
       runId: "root",
       sessionKey: key("root"),
       sessionId: "root-session",
-      kind: "agent" as const,
-      timeoutMs: 60_000,
+      resolveGatewayContext: resolver,
     };
-    const registration = withPluginRuntimeGatewayContextResolver(resolver, () =>
-      registerChatAbortController(registrationParams),
-    );
+    const registration = registerAbort(registrationTarget);
     expect(getGatewayContextResolver(registration.entry!.input)).toBe(resolver);
     const releaseTail = createDeferred();
     const tailSelected = createDeferred();
-    const cleanupEntered = createDeferred();
-    const releaseCleanup = createDeferred();
+    const cleanupGate = createEnteredGate();
     const failure = new Error("raw disposal callback failed");
     let callbackCompleted = false;
     let pending: ReturnType<typeof killAllControlledSubagentRuns> | undefined;
@@ -758,30 +761,15 @@ it.each([
             expect(selected.requesterSettleWake).toBeDefined();
           }
           if (registryBindingLoss) {
-            fixture.worker.mockImplementation((stateContext, operation, options) =>
-              runSubagentStateWorkerOperation(
-                stateContext,
-                (scope) =>
-                  operation({
-                    execute: async (command, commandOptions) => {
-                      const row = isSubagentRegistryWriteCommand(command)
-                        ? command.input.values.find((candidate) => candidate.run_id === root.runId)
-                        : undefined;
-                      const next = row && rowToSubagentRunRecord(row);
-                      const receipt = await scope.execute(command, commandOptions);
-                      if (next?.suppressCompletionDelivery && !next.requesterSettleWake) {
-                        const current = expectDefined(subagentRuns.get(root.runId), "wake owner");
-                        expect(getGatewayContextResolver(current)).toBe(resolver);
-                        // Retiring the registry projection does not revoke the controller input.
-                        clearGatewayContextResolver(current);
-                        bindingLost = true;
-                      }
-                      return receipt;
-                    },
-                  }),
-                options,
-              ),
-            );
+            interceptRegistryWrite(root.runId, (next) => () => {
+              if (next?.suppressCompletionDelivery && !next.requesterSettleWake) {
+                const current = expectDefined(subagentRuns.get(root.runId), "wake owner");
+                expect(getGatewayContextResolver(current)).toBe(resolver);
+                // Retiring the registry projection does not revoke the controller input.
+                clearGatewayContextResolver(current);
+                bindingLost = true;
+              }
+            });
           }
           pending = stop();
           const result = await pending;
@@ -811,10 +799,7 @@ it.each([
         tailSelected.resolve();
       }
     });
-    fixture.cleanup.mockImplementationOnce(async () => {
-      cleanupEntered.resolve();
-      await releaseCleanup.promise;
-    });
+    fixture.cleanup.mockImplementationOnce(cleanupGate.wait);
     const startStop = async () => {
       observingStop = true;
       pending = stop();
@@ -836,13 +821,13 @@ it.each([
           terminalReply: { disposition: "visible", text: "completed" },
         },
       });
-      await cleanupEntered.promise;
+      await cleanupGate.entered;
       expect(subagentRuns.get(root.runId)?.execution.outcome?.status).toBe("ok");
       expect(getGatewayContextResolver(subagentRuns.get(root.runId)!)).toBe(resolver);
       if (!startsAfterCleanup) {
         await startStop();
       }
-      releaseCleanup.resolve();
+      cleanupGate.release();
       await fixture.settle();
       expect(subagentRuns.get(root.runId)?.cleanupCompletedAt).toBeTypeOf("number");
       expect(getGatewayContextResolver(subagentRuns.get(root.runId)!)).toBe(
@@ -858,9 +843,7 @@ it.each([
       expect(resolveSubagentSessionStatus(subagentRuns.get("child"))).toBe("running");
       if (mode === "controller replaced") {
         rpcSourceTesting.deleteExpected(root.runId, registration.entry!);
-        withPluginRuntimeGatewayContextResolver(resolver, () =>
-          registerChatAbortController(registrationParams),
-        );
+        registerAbort(registrationTarget);
         retireSubagentGatewayBinding(root);
         expect(captureRootExecution()?.execution).toBe(registration.entry);
       }
@@ -893,7 +876,7 @@ it.each([
         expect(captureRootExecution()).toBeUndefined();
       }
     } finally {
-      releaseCleanup.resolve();
+      cleanupGate.release();
       releaseTail.resolve();
       await Promise.allSettled([pending, execution]);
       fixture.worker.mockImplementation(runSubagentStateWorkerOperation);

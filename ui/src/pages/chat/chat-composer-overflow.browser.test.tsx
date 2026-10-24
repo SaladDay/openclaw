@@ -14,7 +14,9 @@ import {
 import type { ChatAttachmentControlsProps } from "./components/chat-attachment-controls.types.ts";
 import { AttachmentPreview } from "./components/chat-attachments.tsx";
 import { ChatGoal } from "./components/chat-composer-goal.tsx";
+import { makeCapabilities } from "./components/chat-composer-menu.test-support.ts";
 import { ComposerMenu } from "./components/chat-composer-menu.tsx";
+import { createComposerQuestions } from "./components/chat-composer-questions.ts";
 import { resetChatComposerState } from "./components/chat-composer-state.ts";
 import type { ChatComposerProps } from "./components/chat-composer-types.ts";
 import { ChatComposer } from "./components/chat-composer.tsx";
@@ -25,6 +27,7 @@ import goalStyles from "../../styles/chat/composer-progress.css?inline";
 import queueStyles from "../../styles/chat/composer-queue.css?inline";
 import composerSurfaceStyles from "../../styles/chat/composer-surface.css?inline";
 import composerStyles from "../../styles/chat/composer.css?inline";
+import componentStyles from "../../styles/components.css?inline";
 
 const attachments = Array.from({ length: 7 }, (_, index) => ({
   id: `overflow-${index}`,
@@ -49,11 +52,12 @@ describe("composer overflow presentation", () => {
 
   function ComposerFixture(props: ComposerFixtureProps) {
     const Provider = composerContextWrapper(container)!;
+    const questions = createComposerQuestions(props.input.paneId, () => props.input);
     return (
       <Provider>
         <ContentPresentation value={presented}>
           {props.thread ? <div class="chat-thread" /> : null}
-          <ChatComposer {...props.input} />
+          <ChatComposer {...props.input} questions={questions} />
         </ContentPresentation>
       </Provider>
     );
@@ -89,6 +93,7 @@ describe("composer overflow presentation", () => {
     styles = document.createElement("style");
     styles.textContent = [
       baseStyles,
+      componentStyles,
       composerStyles,
       composerSurfaceStyles,
       contextStripStyles,
@@ -118,7 +123,7 @@ describe("composer overflow presentation", () => {
       container.className = "";
       container.style.cssText = `position: fixed; bottom: 24px; left: 16px; width: ${Math.min(width - 32, 760)}px`;
       const props = createComposerProps({
-        capabilityMenu: {
+        capabilityMenu: makeCapabilities({
           basePath: "",
           skills: [
             "apple-notes",
@@ -133,21 +138,7 @@ describe("composer overflow presentation", () => {
             baseEnabled: false,
             missingDeps: true,
           })),
-          skillsLoading: false,
-          skillsError: false,
-          mcpServers: [],
-          toolsEffectiveResult: null,
-          toolsEffectiveLoading: false,
-          toolsEffectiveError: false,
-          toolAccessMutationBlockedReason: null,
-          webSearchBaseEnabled: true,
-          mutationBlockedReason: null,
-          canAdmin: true,
-          adminBlockedReason: null,
-          onLoadSkills: vi.fn(),
-          onPatchToolOverrides: vi.fn(),
-          onNavigate: vi.fn(),
-        },
+        }),
       });
       drawComposer(props);
       await page
